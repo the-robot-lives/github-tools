@@ -15,7 +15,7 @@ make install    # Installs github-tools to ~/.local/bin
 
 ## Configuration
 
-Uses `k8-util-config.yaml` for shared settings (see [k8-lib README](../k8-lib/README.md)). Every tool accepts `--config <path>` to specify an alternative config file.
+Uses `infra-config.yaml` for shared settings (see [k8-lib README](../k8-lib/README.md)). Every tool accepts `--config <path>` to specify an alternative config file.
 
 The tool auto-detects the git root from the current working directory — no path configuration required. It works in any repository with `.gitmodules`, regardless of where it's installed.
 
