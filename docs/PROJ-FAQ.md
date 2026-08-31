@@ -19,13 +19,20 @@ submodules and you're fine with one blanket message, `foreach` is one line
 and needs no install.
 → *See [PROJ-HOWTO.md](PROJ-HOWTO.md#how-to-bulk-commit--push-all-dirty-submodules) and [#how-to-handle-a-repo-with-submodules-nested-inside-submodules](PROJ-HOWTO.md#how-to-handle-a-repo-with-submodules-nested-inside-submodules).*
 
-### Why does this repo's own monorepo use subtrees, but this tool targets submodules?
-Because they're solving different problems for different consumers. The
-Noizu Infra monorepo (`projects/`) uses git **subtrees** so portfolio
-projects live inline with no separate checkout step — `submodule-commit`
-doesn't touch that structure at all. This tool exists for *other* repos
-(and nested checkouts) that use real `.gitmodules`-based submodules, where
-the deepest-first bubbling problem actually occurs.
+### Why a dashboard *and* a commit tool?
+They solve different jobs. `submodule-status` is read-only (where is the
+code, which worktrees exist, which PRs/CI are in flight). `submodule-commit`
+is the write path (bulk commit/push). Mixing "open this PR in a browser"
+with "git add . && commit" in one prompt is how people wreck the wrong
+checkout.
+→ *See [PROJ-HOWTO.md](PROJ-HOWTO.md#how-to-see-every-submodule-its-worktrees-open-prs-and-actions).*
+
+### Why does the FAQ still mention subtrees?
+Older docs described the Noizu Infra monorepo as subtree-based. The live
+tree uses **submodules** (see root `.gitmodules`). `submodule-status` is
+meant to be run from that umbrella repo (or any other `.gitmodules` tree).
+`submodule-commit` still exists for the deepest-first bubbling problem in
+nested submodule graphs.
 → *See [PROJ-ARCH.md](PROJ-ARCH.md#key-decisions) ("Repo-agnostic").*
 
 ## Fit
@@ -106,10 +113,20 @@ select/commit that parent in a later run.
 ## Trust
 
 ### Does it ever touch files or state outside the git repos it's scanning?
-No — the tool is stateless by design: it derives everything from
-`git rev-parse --show-toplevel` plus `.gitmodules` walking at runtime and
-writes nothing of its own (no cache, no config file it creates). The only
-external dependency it reads from is `k8-lib` (config/logging/assist
-helpers), and the only config file consulted is whatever `infra-config.yaml`
-/ `k8-util-config.yaml` resolves to (or the path passed via `--config`).
+`submodule-commit` is still stateless: it derives everything from
+`git rev-parse --show-toplevel` plus `.gitmodules` and writes nothing of its
+own. `submodule-status` is read-only against git checkouts but **does** write
+under `~/.cache/submodule-status/` (GitHub JSON cache, last snapshot,
+`dashboard.html`) so `--web` and `--ttl` have somewhere to land. It does not
+commit, push, or mutate worktrees. Auth is delegated to `gh`; no tokens are
+stored. The only other external read is `k8-lib` (config/logging/assist) and
+whatever `infra-config.yaml` / `--config` resolves to.
 → *See [PROJ-ARCH.md](PROJ-ARCH.md#overview) and [PROJ-HOWTO.md](PROJ-HOWTO.md#how-to-point-the-tool-at-a-non-default-config-file).*
+
+### How do I click through to GitHub?
+Three ways, in decreasing mouse-friendliness: `submodule-status --web` (HTML
+dashboard — repo, PR, Actions run, branch, and `file://` worktree paths are
+all links); OSC-8 links in the fzf preview / `--table` output (iTerm2, kitty,
+WezTerm, Ghostty, VS Code); fzf keys (`enter` repo, `ctrl-p` PRs, `ctrl-a`
+Actions, `ctrl-b` branch, `ctrl-w` folder).
+→ *See [PROJ-HOWTO.md](PROJ-HOWTO.md#how-to-see-every-submodule-its-worktrees-open-prs-and-actions).*

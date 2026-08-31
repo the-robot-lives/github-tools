@@ -4,25 +4,61 @@ Task-oriented guides for `github-utils`. For *what it is* see
 [PROJ-ARCH.md](PROJ-ARCH.md); for *where things live* see
 [PROJ-LAYOUT.md](PROJ-LAYOUT.md).
 
-## How to: install the tool
-**Goal:** get `submodule-commit` on your `$PATH`.
-**Prereqs:** `git`, `fzf` (`brew install fzf`).
+## How to: install the tools
+**Goal:** get `submodule-status` and `submodule-commit` on your `$PATH`.
+**Prereqs:** `python3`, `git`; `fzf` (`brew install fzf`) for the TUI; `gh auth login` for PRs/Actions.
 
 1. From this directory:
    ```bash
    make install
    ```
-2. This copies every `bin/submodule-*` script to `~/.local/bin` (override with
-   `INSTALL_DIR=<path> make install`).
+   Or from the monorepo root: `make install-utilities` (fan-out via `utilities/shell/github-utils`).
+2. This copies every `bin/submodule-*` script to `~/.local/bin` and
+   `lib/submodule_status.py` to `~/.local/share/github-utils/`
+   (override with `INSTALL_DIR=<path> SHARE_DIR=<path> make install`).
 
 **Verify:**
 ```bash
+command -v submodule-status && submodule-status --help
 command -v submodule-commit && submodule-commit --help
 ```
 **Gotchas:**
-- If `submodule-commit` isn't found after install, `~/.local/bin` probably
+- If a command isn't found after install, `~/.local/bin` probably
   isn't on `$PATH` — add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc.
-- Missing `fzf` fails loudly at runtime (`fzf is required but not found`), not at install time.
+- Missing `fzf` makes `submodule-status` print a table (or use `--web`); `submodule-commit` still requires fzf.
+- Missing `gh` / unauthenticated `gh` skips PRs and Actions with a warning; pass `--local` to skip the probe.
+
+## How to: see every submodule, its worktrees, open PRs, and Actions
+**Goal:** scan the repo (including nested `.gitmodules`) and browse checkouts, extra worktrees with ages, open PRs + their branches, and CI.
+**Prereqs:** run from inside a git repo; tool installed. `gh auth login` for GitHub columns.
+
+```bash
+submodule-status                 # fzf dashboard
+submodule-status --web           # HTML dashboard (click any repo / PR / run / branch)
+submodule-status --table         # stdout table with OSC-8 links
+submodule-status --local         # worktrees only, no GitHub
+submodule-status Portfolio/Apps  # prefix filter
+```
+
+In the fzf UI: **enter** / **double-click** opens the GitHub repo; **ctrl-p** PRs; **ctrl-a** Actions; **ctrl-b** current branch; **ctrl-w** local folder; **ctrl-e** HTML dashboard; **ctrl-r** refresh.
+
+**Verify:** preview shows worktrees with ages; PR rows are `#N branch`; OSC-8 / HTML links land on github.com.
+**Gotchas:**
+- Dual-path utilities appear twice (two checkouts, one GitHub repo) — that's intentional.
+- Extra worktrees are those returned by `git worktree list` on the submodule itself (`git -C Portfolio/... worktree add`), not loose clones in `staging/` that were copied independently.
+- GitHub responses cache for 90s under `~/.cache/submodule-status/`; `--refresh` forces a refetch.
+
+## How to: get a JSON snapshot for scripts
+**Goal:** consume the same inventory without the TUI.
+**Prereqs:** same as above.
+
+```bash
+submodule-status --json --local > /tmp/mods.json
+submodule-status --json --dump ~/.cache/submodule-status/snapshot.json >/dev/null
+```
+
+**Verify:** JSON has `modules[].path`, `worktrees[]`, `prs[]`, `runs[]`, `ci`.
+**Gotchas:** progress goes to stderr; stdout is JSON only in `--json` mode.
 
 ## How to: bulk commit + push all dirty submodules
 **Goal:** commit and push every changed submodule in one pass, nested ones included, without manually `cd`-ing into each.

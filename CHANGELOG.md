@@ -1,6 +1,8 @@
 # Changelog — utilities/shell/github-utils
 
 ## [Unreleased]
+- Added `submodule-status` — recursive submodule dashboard (worktrees + ages, open PRs/branches, Actions CI). fzf TUI with clickable OSC-8 links, `--web` HTML dashboard, `--table` / `--json`. Python 3 stdlib collector; `gh` optional. Cached under `~/.cache/submodule-status/`.
+- `make install` now also copies `lib/submodule_status.py` to `~/.local/share/github-utils/` and `make test` runs `bash -n` + unit tests.
 - Added `docs/PROJ-ARCH.md` and `docs/PROJ-LAYOUT.md` (+ summaries) for this utility.
 - Added `docs/PROJ-HOWTO.md` (+ summary) — task-oriented guides for install, bulk commit/push, `--dry-run`, `--config`, `--assist`, and nested-submodule handling.
 - Added `docs/PROJ-FAQ.md` (+ summary) — why/when/compared-to-what answers: `foreach` vs. this tool, subtrees vs. submodules, `--dry-run`/`--no-push`/`--assist` distinctions, partial-push-failure recovery, and the stateless/no-external-writes trust note.

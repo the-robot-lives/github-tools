@@ -4,7 +4,8 @@ Question index only — see [PROJ-FAQ.md](PROJ-FAQ.md) for answers.
 
 ## Motivation
 - Why would I use this instead of `git submodule foreach`?
-- Why does this repo's own monorepo use subtrees, but this tool targets submodules?
+- Why a dashboard *and* a commit tool?
+- Why does the FAQ still mention subtrees?
 
 ## Fit
 - When is this the right tool vs. just `cd`-ing into each submodule manually?
@@ -25,3 +26,4 @@ Question index only — see [PROJ-FAQ.md](PROJ-FAQ.md) for answers.
 
 ## Trust
 - Does it ever touch files or state outside the git repos it's scanning?
+- How do I click through to GitHub?
