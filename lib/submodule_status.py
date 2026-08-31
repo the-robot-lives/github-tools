@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import quote
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 CACHE_SCHEMA = 1
 GH_PR_FIELDS = (
     "number,title,url,headRefName,updatedAt,author,reviewDecision,statusCheckRollup"
@@ -410,6 +410,79 @@ def list_local_branches(path: str, limit: int = 12) -> List[Dict[str, Any]]:
     return (current + rest)[:limit]
 
 
+def local_only_branches(path: str, worktrees: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Local branches with no origin/<name> counterpart, classified against
+    origin/main and origin/develop (whichever exist).
+
+    merged_into names the first base the branch tip is an ancestor of (safe to
+    delete); unmerged branches report how many commits they carry past the
+    first base. Remote set is whatever the last fetch saw — no network.
+    """
+    code, out, _ = git(path, "for-each-ref", "refs/remotes/origin", "--format=%(refname:short)")
+    if code != 0:
+        return []
+    remote_names = {r.split("/", 1)[1] for r in out.splitlines() if r.startswith("origin/")}
+    bases = [b for b in ("main", "develop") if git(path, "rev-parse", "--verify", "--quiet", f"origin/{b}")[0] == 0]
+    wt_by_branch: Dict[str, Dict[str, Any]] = {}
+    for w in worktrees or []:
+        br = w.get("branch")
+        if br:
+            wt_by_branch[br] = w
+    code, out, _ = git(
+        path,
+        "for-each-ref",
+        "--sort=-committerdate",
+        "refs/heads",
+        "--format=%(refname:short)\t%(objectname:short)\t%(committerdate:unix)",
+    )
+    if code != 0:
+        return []
+    rows: List[Dict[str, Any]] = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        name, sha, ts = parts[0], parts[1], parts[2]
+        if name in remote_names:
+            continue
+        merged_into = None
+        for b in bases:
+            if git(path, "merge-base", "--is-ancestor", name, f"origin/{b}")[0] == 0:
+                merged_into = b
+                break
+        ahead = 0
+        if merged_into is None and bases:
+            raw = git_out(path, "rev-list", "--count", f"origin/{bases[0]}..{name}")
+            ahead = int(raw) if raw.isdigit() else 0
+        wt = wt_by_branch.get(name)
+        wt_dirty = None
+        if wt and os.path.isdir(wt["path"]):
+            wt_dirty = dirty_counts(wt["path"])["dirty"]
+        age_s, age_h = age_from_epoch(int(ts) if ts.isdigit() else None)
+        rows.append(
+            {
+                "name": name,
+                "sha": sha,
+                "merged_into": merged_into,
+                "ahead": ahead,
+                "worktree": wt["path"] if wt else None,
+                "wt_dirty": wt_dirty,
+                "age": age_h,
+                "age_seconds": age_s,
+            }
+        )
+    return rows
+
+
+def local_only_label(b: Dict[str, Any]) -> Tuple[str, str]:
+    """(state, label) for a local-only branch row: merged|unmerged|nobase."""
+    if b.get("merged_into"):
+        return "merged", f"merged→origin/{b['merged_into']}"
+    if b.get("ahead"):
+        return "unmerged", f"unmerged +{b['ahead']}"
+    return "nobase", "no main/develop base"
+
+
 def dirty_counts(path: str) -> Dict[str, int]:
     code, out, _ = git(path, "status", "--porcelain")
     staged = modified = untracked = 0
@@ -460,6 +533,8 @@ def enrich_local(item: Dict[str, str], now: int, include_branches: bool) -> Dict
         "detached": False,
         "worktrees": [],
         "branches": [],
+        "local_only": [],
+        "lo_count": 0,
         "github": None,
         "repo_url": None,
         "prs_url": None,
@@ -486,6 +561,8 @@ def enrich_local(item: Dict[str, str], now: int, include_branches: bool) -> Dict
             rec["worktrees"] = parse_worktrees(porcelain, path, now)
         rec["wt_count"] = len(rec["worktrees"])
         rec["extra_worktrees"] = sum(1 for w in rec["worktrees"] if not w.get("primary"))
+        rec["local_only"] = local_only_branches(path, rec["worktrees"])
+        rec["lo_count"] = len(rec["local_only"])
         if include_branches:
             rec["branches"] = list_local_branches(path)
     nwo = github_nwo(origin) or github_nwo(url)
@@ -773,6 +850,8 @@ def collect_snapshot(args: argparse.Namespace) -> Dict[str, Any]:
 
     if args.dirty:
         modules = [m for m in modules if m.get("dirty") or m.get("extra_worktrees")]
+    if args.local_only:
+        modules = [m for m in modules if m.get("local_only")]
     if args.prs_only:
         modules = [m for m in modules if m.get("pr_count")]
     if args.failing:
@@ -789,6 +868,10 @@ def collect_snapshot(args: argparse.Namespace) -> Dict[str, Any]:
         "failing_count": sum(1 for m in modules if (m.get("ci") or {}).get("state") == "fail"),
         "dirty_count": sum(1 for m in modules if m.get("dirty")),
         "worktree_count": sum(m.get("wt_count") or 0 for m in modules),
+        "local_only_count": sum(len(m.get("local_only") or []) for m in modules),
+        "merged_local_count": sum(
+            1 for m in modules for b in (m.get("local_only") or []) if b.get("merged_into")
+        ),
         "modules": modules,
     }
     return snap
@@ -813,7 +896,7 @@ def format_table(snap: Dict[str, Any]) -> str:
     rows = []
     header = (
         f"{'PATH':<46} {'GITHUB':<28} {'BRANCH':<18} {'DIRTY':<7} "
-        f"{'WT':>3} {'PR':>3} {'CI':<10} AGE"
+        f"{'WT':>3} {'LO':>3} {'PR':>3} {'CI':<10} AGE"
     )
     rows.append(colorize("1", header))
     for m in snap["modules"]:
@@ -824,6 +907,13 @@ def format_table(snap: Dict[str, Any]) -> str:
         branch = (m.get("branch") or "—")[:18]
         dirty = "dirty" if m.get("dirty") else ("miss" if m.get("missing") else "clean")
         wt = str(m.get("wt_count") or 0)
+        los = m.get("local_only") or []
+        if los and all(b.get("merged_into") for b in los):
+            lo = colorize("32", f"{len(los):>3}")
+        elif los:
+            lo = colorize("33", f"{len(los):>3}")
+        else:
+            lo = colorize("2", "  0")
         prs = str(m.get("pr_count") or 0)
         ci = m.get("ci") or {}
         wts = m.get("worktrees") or []
@@ -837,13 +927,14 @@ def format_table(snap: Dict[str, Any]) -> str:
         ci_s = osc8(m.get("actions_url"), ci_ansi(ci.get("state") or "none", f"{(ci.get('label') or '—'):<10}"))
         dirty_s = colorize("33" if m.get("dirty") else ("31" if m.get("missing") else "2"), f"{dirty:<7}")
         rows.append(
-            f"{path_s:<46} {nwo_s} {branch_s} {dirty_s} {wt:>3} {prs_s} {ci_s} {age}"
+            f"{path_s:<46} {nwo_s} {branch_s} {dirty_s} {wt:>3} {lo} {prs_s} {ci_s} {age}"
         )
     rows.append("")
     rows.append(
         colorize(
             "2",
             f"{snap['module_count']} modules  {snap['dirty_count']} dirty  "
+            f"{snap.get('local_only_count', 0)} local-only  "
             f"{snap['pr_count']} open PRs  {snap['failing_count']} failing CI  "
             f"{snap['worktree_count']} worktrees",
         )
@@ -925,6 +1016,21 @@ def format_preview(m: Dict[str, Any]) -> str:
             if b.get("upstream"):
                 ab = f"  ↑{b.get('ahead', 0)} ↓{b.get('behind', 0)}"
             lines.append(f"  {cur} {b.get('name')}  {b.get('sha') or ''}  {b.get('age') or ''}{ab}")
+    los = m.get("local_only") or []
+    if los:
+        lines.append("")
+        state_color = {"merged": "32", "unmerged": "33", "nobase": "31"}
+        lines.append(colorize("1", f"Local-only branches ({len(los)})"))
+        for b in los[:12]:
+            state, label = local_only_label(b)
+            wt = f"  wt:{b['worktree']}" if b.get("worktree") else ""
+            dirty = colorize("33", " dirty") if b.get("wt_dirty") else ""
+            lines.append(
+                f"  • {b.get('name')}  {b.get('sha') or ''}  {b.get('age') or ''}  "
+                + colorize(state_color.get(state, "36"), label)
+                + wt
+                + dirty
+            )
     lines.append("")
     lines.append(colorize("2", "enter:repo  ^P:PRs  ^A:Actions  ^B:branch  ^W:folder  ^E:HTML  ^R:reload  q:quit"))
     return "\n".join(lines)
@@ -1002,6 +1108,7 @@ tr.miss td { opacity:.55; }
     <label class="chip"><input type="checkbox" id="f-prs"/> open PRs</label>
     <label class="chip"><input type="checkbox" id="f-fail"/> failing CI</label>
     <label class="chip"><input type="checkbox" id="f-wt"/> extra worktrees</label>
+    <label class="chip"><input type="checkbox" id="f-lo"/> local-only</label>
   </div>
   <div class="help">click a row · j/k · enter repo · p PRs · a Actions</div>
 </header>
@@ -1015,6 +1122,7 @@ tr.miss td { opacity:.55; }
           <th data-k="branch">Branch</th>
           <th data-k="dirty">Dirty</th>
           <th data-k="wt_count">WT</th>
+          <th data-k="lo_count">LO</th>
           <th data-k="pr_count">PRs</th>
           <th data-k="ci">CI</th>
         </tr>
@@ -1042,12 +1150,14 @@ function visible() {
   const prs = $("f-prs").checked;
   const fail = $("f-fail").checked;
   const wt = $("f-wt").checked;
+  const lo = $("f-lo").checked;
   return DATA.modules.filter(m => {
     if (q && !(m.search || "").includes(q) && !(m.path||"").toLowerCase().includes(q)) return false;
     if (dirty && !m.dirty) return false;
     if (prs && !(m.pr_count)) return false;
     if (fail && (m.ci||{}).state !== "fail") return false;
     if (wt && !(m.extra_worktrees)) return false;
+    if (lo && !(m.local_only||[]).length) return false;
     return true;
   }).sort((a,b) => {
     let av = a[sortKey], bv = b[sortKey];
@@ -1064,6 +1174,7 @@ function renderStats(rows) {
     `<span><b>${DATA.pr_count}</b> open PRs</span>` +
     `<span><b>${DATA.failing_count}</b> failing</span>` +
     `<span><b>${DATA.worktree_count}</b> worktrees</span>` +
+    `<span><b>${DATA.local_only_count||0}</b> local-only</span>` +
     `<span>${DATA.generated_at || ""}</span>` +
     (DATA.github_enabled ? "" : `<span>${DATA.github_note || "local only"}</span>`);
 }
@@ -1086,10 +1197,13 @@ function renderTable() {
     const ciA = m.actions_url
       ? `<a class="${ciClass(ci.state)}" href="${m.actions_url}" target="_blank" rel="noopener">${ci.label||"—"}</a>`
       : `<span class="${ciClass(ci.state)}">${ci.label||"—"}</span>`;
+    const los = m.local_only||[];
+    const loCls = los.some(b => !b.merged_into) ? "running" : (los.length ? "pass" : "clean");
     return `<tr class="mod${sel}${m.missing?" miss":""}" data-path="${m.path.replace(/"/g,"&quot;")}">
       <td>${m.path}</td><td>${gh}</td><td>${br}</td>
       <td class="${st}">${m.missing?"missing":(m.dirty?"dirty":"clean")}</td>
       <td>${m.wt_count||0}${m.extra_worktrees?` <span class="running">+${m.extra_worktrees}</span>`:""}</td>
+      <td class="${loCls}">${los.length}</td>
       <td>${pr}</td><td>${ciA}</td></tr>`;
   }).join("");
   document.querySelectorAll("tr.mod").forEach(tr => {
@@ -1130,6 +1244,13 @@ function show(path) {
     return `<div class="card"><div>${b.current?"★":"•"} ${name} ${b.sha||""}</div>
       <div class="meta">${b.age||""}${b.upstream?` · ${b.upstream} ↑${b.ahead||0} ↓${b.behind||0}`:""}</div></div>`;
   }).join("");
+  const los = (m.local_only||[]).map(b => {
+    const st = b.merged_into ? `<span class="pass">merged→origin/${b.merged_into}</span>`
+      : (b.ahead ? `<span class="running">unmerged +${b.ahead}</span>` : `<span class="running">no main/develop base</span>`);
+    const wtLink = b.worktree ? ` · <a href="file://${b.worktree}">worktree</a>` : "";
+    return `<div class="card"><div>${b.name} ${b.sha||""}</div>
+      <div class="meta">${st}${b.wt_dirty?" · dirty":""}${wtLink} · ${b.age||""}</div></div>`;
+  }).join("");
   $("detail").innerHTML = `
     <h2>${m.path}</h2>
     <div class="kv">
@@ -1147,10 +1268,11 @@ function show(path) {
     <h3>Worktrees (${(m.worktrees||[]).length})</h3>${wts}
     <h3>Open PRs (${m.pr_count||0})</h3>${prs}
     <h3>Actions</h3>${runs}
+    ${los?`<h3>Local-only (${(m.local_only||[]).length})</h3>${los}`:""}
     ${brs?`<h3>Local branches</h3>${brs}`:""}
   `;
 }
-["q","f-dirty","f-prs","f-fail","f-wt"].forEach(id => $(id).addEventListener("input", renderTable));
+["q","f-dirty","f-prs","f-fail","f-wt","f-lo"].forEach(id => $(id).addEventListener("input", renderTable));
 document.querySelectorAll("th[data-k]").forEach(th => th.addEventListener("click", () => {
   const k = th.dataset.k;
   if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = 1; }
@@ -1244,7 +1366,8 @@ def fzf_rows(snap: Dict[str, Any]) -> str:
         branch = m.get("branch") or "—"
         display = (
             f"{path:<44}  {nwo:<26}  {branch:<16}  {dirty:<5}  "
-            f"{m.get('wt_count') or 0:>2}wt  {m.get('pr_count') or 0:>2}pr  "
+            f"{m.get('wt_count') or 0:>2}wt  {len(m.get('local_only') or []):>2}lo  "
+            f"{m.get('pr_count') or 0:>2}pr  "
             f"{(ci.get('label') or '—'):<10}"
         )
         fields = [
@@ -1328,6 +1451,7 @@ Examples:
   submodule-status --table         stdout table (OSC-8 links on a TTY)
   submodule-status --json          snapshot JSON
   submodule-status --local         skip GitHub (no gh required)
+  submodule-status --local-only --table   modules with unpushed local branches
   submodule-status Portfolio/Apps  only this path prefix
 """
 
@@ -1353,6 +1477,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", help="write HTML to this path (implies --web)")
     p.add_argument("--dump", help="also write the JSON snapshot to this path")
     p.add_argument("--dirty", action="store_true", help="only dirty checkouts (or extra worktrees)")
+    p.add_argument(
+        "--local-only",
+        dest="local_only",
+        action="store_true",
+        help="only modules with local-only branches (unpushed); merge state vs origin/main|develop shown",
+    )
     p.add_argument("--prs", "--prs-only", dest="prs_only", action="store_true", help="only modules with open PRs")
     p.add_argument("--failing", action="store_true", help="only modules whose latest CI/PR checks failed")
     p.add_argument("--refresh", action="store_true", help="ignore GitHub response cache")

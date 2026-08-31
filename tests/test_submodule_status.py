@@ -100,6 +100,11 @@ class ParseTests(unittest.TestCase):
         args = mod.parse_cli(["--local", "Portfolio/Apps"])
         self.assertEqual(args.filter, "Portfolio/Apps")
 
+    def test_parse_cli_local_only(self):
+        args = mod.parse_cli(["--local-only"])
+        self.assertTrue(args.local_only)
+        self.assertFalse(mod.parse_cli(["--local"]).local_only)
+
     def test_summarize_ci(self):
         runs = [{"label": "pass", "state": "pass"}]
         self.assertEqual(mod.summarize_ci(runs, [])["state"], "pass")
@@ -143,6 +148,66 @@ class GitFixtureTests(unittest.TestCase):
             self.assertEqual(extra_wt["branch"], "feat/demo")
             self.assertFalse(extra_wt["primary"])
             self.assertIsNotNone(extra_wt["age"])
+
+    def test_local_only_branch_classification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            child = os.path.join(tmp, "child.git")
+            parent = os.path.join(tmp, "parent")
+            init_repo(child, "child")  # main @ A
+            git(child, "branch", "develop")  # develop @ A
+            git(child, "checkout", "develop")
+            Path(child, "DEV").write_text("dev\n")
+            git(child, "add", "DEV")
+            git(child, "commit", "-m", "A2")  # origin/develop @ A2 (diverged from main)
+            git(child, "checkout", "main")
+            Path(child, "README").write_text("child B\n")
+            git(child, "add", "README")
+            git(child, "commit", "-m", "B")  # origin/main @ B
+            init_repo(parent, "parent")
+            git(parent, "-c", "protocol.file.allow=always", "submodule", "add", child, "mods/child")
+            git(parent, "commit", "-m", "add child")
+            sub = os.path.join(parent, "mods/child")
+
+            # merged into origin/main (tip == origin/main)
+            git(sub, "branch", "stale", "origin/main")
+            # merged into origin/develop, checked out in the primary worktree
+            git(sub, "checkout", "-b", "wt-branch", "origin/develop")
+            # merged into origin/develop, checked out in an extra worktree
+            git(sub, "branch", "wt2", "origin/develop")
+            wtpath = os.path.join(tmp, "child-wt2")
+            git(sub, "worktree", "add", wtpath, "wt2")
+            # unmerged: two commits past origin/main, on neither base
+            git(sub, "checkout", "-b", "dirty-work", "origin/main")
+            for i in range(2):
+                Path(sub, "work.txt").write_text(f"{i}\n")
+                git(sub, "add", "work.txt")
+                git(sub, "commit", "-m", f"w{i}")
+            git(sub, "checkout", "--detach")
+
+            argv = ["--local", "--json", "--fast", "--root", parent, "--no-root"]
+            buf = __import__("io").StringIO()
+            old = sys.stdout
+            sys.stdout = buf
+            try:
+                code = mod.main(argv)
+            finally:
+                sys.stdout = old
+            self.assertEqual(code, 0)
+            snap = json.loads(buf.getvalue())
+            child_mod = next(m for m in snap["modules"] if m["path"] == "mods/child")
+            by_name = {b["name"]: b for b in child_mod["local_only"]}
+            self.assertEqual(
+                set(by_name), {"stale", "wt-branch", "wt2", "dirty-work"}
+            )
+            self.assertEqual(by_name["stale"]["merged_into"], "main")
+            self.assertEqual(by_name["wt-branch"]["merged_into"], "develop")
+            self.assertEqual(by_name["wt2"]["merged_into"], "develop")
+            self.assertTrue(os.path.samefile(by_name["wt2"]["worktree"], wtpath))
+            self.assertIsNone(by_name["dirty-work"]["merged_into"])
+            self.assertEqual(by_name["dirty-work"]["ahead"], 2)
+            self.assertEqual(child_mod["lo_count"], 4)
+            self.assertEqual(snap["local_only_count"], 4)
+            self.assertEqual(snap["merged_local_count"], 3)
 
     def test_html_contains_github_links(self):
         snap = {
