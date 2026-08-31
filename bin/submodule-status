@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# =============================================================================
+# submodule-status — Dashboard of git submodules, worktrees, PRs, and Actions.
+#
+# Recursively walks `.gitmodules` (nested submodules included), then presents
+# each checkout's branch / dirty state, extra git worktrees with ages, open
+# GitHub PRs (and their branches), and recent Actions runs.
+#
+# Default on a TTY: fzf TUI. Preview pane has OSC-8 links; keys / mouse
+# double-click open the corresponding GitHub page. `--web` writes a local HTML
+# dashboard and opens it in the browser (every repo, PR, run, branch, and
+# worktree path is a link).
+#
+# Usage:
+#   submodule-status                 # fzf dashboard (table if no fzf / not a TTY)
+#   submodule-status --web           # clickable HTML dashboard in the browser
+#   submodule-status --table         # stdout table with OSC-8 links
+#   submodule-status --json          # machine-readable snapshot
+#   submodule-status --local         # skip GitHub (no gh required)
+#   submodule-status Portfolio/Apps  # path prefix filter
+#
+# Keys (fzf):
+#   enter / double-click  Open GitHub repo
+#   ctrl-p                Open pull requests
+#   ctrl-a                Open Actions
+#   ctrl-b                Open current branch on GitHub
+#   ctrl-w                Open the local checkout folder
+#   ctrl-e                Open the HTML dashboard
+#   ctrl-r                Refresh (re-scan + re-fetch)
+#   q / esc               Quit
+#
+# Flags:
+#   --web / --html     Write HTML dashboard and open it
+#   --table            Print a table instead of the TUI
+#   --json             Print JSON snapshot to stdout
+#   --local            Skip gh (worktrees / branches / dirty only)
+#   --no-open          With --web, write HTML but do not open a browser
+#   --out PATH         Write HTML to PATH (implies --web)
+#   --dump PATH        Also write the JSON snapshot to PATH
+#   --dirty            Only dirty checkouts (or extra worktrees)
+#   --prs / --prs-only Only modules with open PRs
+#   --failing          Only modules whose latest CI/PR checks failed
+#   --refresh          Ignore GitHub response cache
+#   --ttl SECONDS      GitHub cache TTL (default 90)
+#   --jobs N           Parallel git/gh workers (default 8)
+#   --depth N          Max submodule nesting (default unlimited)
+#   --no-root          Omit the umbrella repo row
+#   --fast             Skip local branch listing
+#   --root DIR         Git repo root (default: detect from cwd)
+#   --config PATH      k8-lib config (accepted; unused by this tool)
+#   -h, --help         Show help
+#
+# Prerequisites:
+#   python3, git. Optional: fzf (TUI), gh (PRs + Actions; `gh auth login`).
+#
+# Cache: ~/.cache/submodule-status/ (gh JSON, last snapshot, dashboard.html)
+# =============================================================================
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+K8_LIB_DIR="${K8_LIB_DIR:-${HOME}/.local/share/k8-lib}"
+INFRA_ROOT="${INFRA_ROOT:-$(pwd)}"
+
+# Pre-parse --config (must resolve before k8-lib sourcing)
+for _k8_arg in "$@"; do
+  case "$_k8_arg" in
+    --config=*) export K8_CONFIG="${_k8_arg#--config=}" ;;
+  esac
+done
+_k8_prev=""
+for _k8_arg in "$@"; do
+  [[ "$_k8_prev" == "--config" ]] && export K8_CONFIG="$_k8_arg"
+  _k8_prev="$_k8_arg"
+done
+unset _k8_arg _k8_prev
+
+if [[ -f "$K8_LIB_DIR/bin/common.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "$K8_LIB_DIR/bin/config.sh"
+  # shellcheck source=/dev/null
+  source "$K8_LIB_DIR/bin/common.sh"
+  if [[ -f "$K8_LIB_DIR/bin/assist.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$K8_LIB_DIR/bin/assist.sh"
+    _k8_check_assist "$0" "$@"
+  fi
+else
+  die() { echo "❌ $1" >&2; exit 1; }
+fi
+
+command -v python3 >/dev/null 2>&1 || die "python3 is required but not found."
+command -v git >/dev/null 2>&1 || die "git is required but not found."
+
+LIB_DIR="${GITHUB_UTILS_LIB_DIR:-${GITHUB_UTILS_SHARE:-${HOME}/.local/share/github-utils}}"
+PY=""
+for candidate in \
+  "${SCRIPT_DIR}/../lib/submodule_status.py" \
+  "${SCRIPT_DIR}/submodule_status.py" \
+  "${LIB_DIR}/submodule_status.py"
+do
+  if [[ -f "$candidate" ]]; then
+    PY="$candidate"
+    break
+  fi
+done
+[[ -n "$PY" ]] || die "submodule_status.py not found — re-run: make install"
+
+export SUBMODULE_STATUS_PY="$PY"
+
+# ctrl-r in the TUI exits 42; re-run with --refresh.
+# Avoid empty-array expansion: macOS bash 3.2 + set -u treats "${arr[@]}" as unbound.
+refresh=0
+while true; do
+  set +e
+  if [[ "$refresh" -eq 1 ]]; then
+    python3 "$PY" --refresh "$@"
+  else
+    python3 "$PY" "$@"
+  fi
+  code=$?
+  set -e
+  if [[ "$code" -eq 42 ]]; then
+    refresh=1
+    continue
+  fi
+  exit "$code"
+done
