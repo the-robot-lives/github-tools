@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 40" role="img" aria-label="github-utils">
+  <title>github-utils</title>
+  <rect width="280" height="40" fill="none"/>
+  <g fill="none" stroke="#22D3EE" stroke-width="1.6">
+    <circle cx="14" cy="20" r="6"/>
+    <circle cx="34" cy="12" r="4"/>
+    <circle cx="34" cy="28" r="4"/>
+    <path d="M20 20h10M34 16v8"/>
+  </g>
+  <text x="48" y="26" fill="#EDEDF4" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="400" letter-spacing="0.04em">github-utils</text>
+</svg>

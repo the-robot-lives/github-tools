@@ -1,0 +1,10 @@
+.DS_Store
+*.swp
+*.swo
+*~
+.env
+.envrc.local
+__pycache__/
+*.pyc
+*.pyo
+docs/_build/
