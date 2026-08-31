@@ -1,6 +1,8 @@
 # Changelog — utilities/shell/github-utils
 
 ## [Unreleased]
+- Marketing / about page + Read the Docs Sphinx tree (`.readthedocs.yaml`, `docs/conf.py`, Nocturne theme overlay). Positioning in `marketing/`.
+- Terraform provider lives in its own public repo: [the-robot-lives/terraform-provider-readthedocs](https://github.com/the-robot-lives/terraform-provider-readthedocs).
 - Added `submodule-status` — recursive submodule dashboard (worktrees + ages, open PRs/branches, Actions CI). fzf TUI with clickable OSC-8 links, `--web` HTML dashboard, `--table` / `--json`. Python 3 stdlib collector; `gh` optional. Cached under `~/.cache/submodule-status/`.
 - `make install` now also copies `lib/submodule_status.py` to `~/.local/share/github-utils/` and `make test` runs `bash -n` + unit tests.
 - Added `docs/PROJ-ARCH.md` and `docs/PROJ-LAYOUT.md` (+ summaries) for this utility.

@@ -1,7 +1,7 @@
 INSTALL_DIR ?= $(HOME)/.local/bin
 LIB_INSTALL_DIR ?= $(HOME)/.local/share/github-utils
 
-.PHONY: compile build test install clean
+.PHONY: compile build test install clean docs
 
 compile:
 	@python3 -m py_compile lib/submodule_status.py
@@ -24,6 +24,12 @@ install: compile
 	@install -m 644 lib/submodule_status.py "$(LIB_INSTALL_DIR)/submodule_status.py"
 	@echo "✓ Installed lib/submodule_status.py -> $(LIB_INSTALL_DIR)/submodule_status.py"
 
+docs:
+	@python3 -m pip install -q -r docs/requirements.txt
+	@python3 -m sphinx -b html docs docs/_build/html
+	@echo "✓ docs → docs/_build/html/index.html"
+
 clean:
 	@find . -name '*.pyc' -delete
 	@find . -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+	@rm -rf docs/_build

@@ -20,6 +20,8 @@ Also installed by the monorepo `make install-utilities` (`utilities/shell/github
 
 ## Configuration
 
+Docs (Read the Docs / Sphinx): `make docs` or see [docs/index.md](docs/index.md). Config: `.readthedocs.yaml`.
+
 Uses `infra-config.yaml` for shared settings (see [k8-lib README](../../share/k8-lib/README.md)). Every tool accepts `--config <path>`.
 
 Git root is auto-detected from cwd. Works in any repo with `.gitmodules`.

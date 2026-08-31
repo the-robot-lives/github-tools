@@ -1,0 +1,127 @@
+/* Nocturne overlay on sphinx_rtd_theme — Plasma Cyan glow, dark canvas. */
+:root {
+  --void: #09090b;
+  --canvas: #0c0c10;
+  --surface: #18181f;
+  --surface-raised: #23232e;
+  --mist: #2a2a3a;
+  --fog: #3a3a4f;
+  --text-dim: #8b8ba3;
+  --text-secondary: #b0b0c6;
+  --text-primary: #cdcde0;
+  --text-bright: #ededf4;
+  --glow: #22d3ee;
+  --glow-bright: #67e8f9;
+  --success: #4ade80;
+  --warning: #facc15;
+  --error: #f87171;
+}
+
+html, body, .wy-body-for-nav, .wy-nav-content, .wy-nav-content-wrap,
+.wy-side-nav-search, .wy-nav-side, .wy-menu-vertical, .rst-content {
+  background: var(--canvas) !important;
+  color: var(--text-secondary) !important;
+}
+
+.wy-nav-side, .wy-side-scroll {
+  background: var(--void) !important;
+}
+
+.wy-side-nav-search {
+  background: var(--void) !important;
+  border-bottom: 1px solid var(--mist);
+}
+
+.wy-side-nav-search input[type="text"] {
+  background: var(--surface) !important;
+  border: 1px solid var(--mist) !important;
+  color: var(--text-primary) !important;
+  box-shadow: none !important;
+  border-radius: 8px;
+}
+
+.wy-menu-vertical a { color: var(--text-dim) !important; }
+.wy-menu-vertical a:hover,
+.wy-menu-vertical li.current > a {
+  color: var(--glow) !important;
+  background: color-mix(in srgb, var(--glow) 8%, var(--void)) !important;
+}
+
+.wy-nav-content { max-width: 920px; }
+.rst-content h1, .rst-content h2, .rst-content h3,
+.rst-content .caption-text {
+  color: var(--text-bright) !important;
+  font-weight: 400;
+}
+
+.rst-content a, .wy-nav-content a {
+  color: var(--glow-bright) !important;
+}
+.rst-content a:hover { text-shadow: 0 0 10px color-mix(in srgb, var(--glow) 40%, transparent); }
+
+.rst-content code, .rst-content tt, .rst-content pre,
+.highlight, .highlight pre {
+  background: var(--surface) !important;
+  color: var(--glow-bright) !important;
+  border: 1px solid var(--mist) !important;
+}
+
+.rst-content table.docutils {
+  border-color: var(--mist) !important;
+}
+.rst-content table.docutils td,
+.rst-content table.docutils th {
+  border-color: var(--mist) !important;
+  background: var(--surface) !important;
+  color: var(--text-secondary) !important;
+}
+.rst-content table.docutils th {
+  color: var(--text-dim) !important;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+}
+
+.btn, .wy-menu-vertical a.reference.internal.current {
+  border-radius: 8px;
+}
+
+/* Landing hero (index.md admonition + first section) */
+.rst-content .hero-cta a.reference.external {
+  display: inline-block;
+  background: var(--glow);
+  color: var(--void) !important;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-weight: 500;
+  text-decoration: none !important;
+  box-shadow:
+    0 0 1px var(--glow),
+    0 0 12px color-mix(in srgb, var(--glow) 30%, transparent);
+}
+.rst-content .hero-cta a.reference.external:hover {
+  box-shadow:
+    0 0 1px var(--glow),
+    0 0 20px color-mix(in srgb, var(--glow) 45%, transparent);
+}
+
+.rst-content .admonition {
+  background: var(--surface-raised) !important;
+  border: 1px solid var(--mist) !important;
+  color: var(--text-secondary) !important;
+}
+.rst-content .admonition-title {
+  background: color-mix(in srgb, var(--glow) 18%, var(--surface)) !important;
+  color: var(--text-bright) !important;
+}
+
+.ethical-rtd, .keep-us-sustainable { display: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { text-shadow: none !important; box-shadow: none !important; }
+}
+
+:focus-visible {
+  outline: 2px solid var(--glow);
+  outline-offset: 2px;
+}
