@@ -5,6 +5,9 @@
 > artifacts are: the git-native `.gitmodules` input format, a per-user runtime
 > cache/snapshot directory, and shell configuration via env vars / k8-lib config.
 > This document covers those instead of table schemas.
+>
+> Code organization: see [PROJ-LAYOUT.md](PROJ-LAYOUT.md) (`bin/submodule-status`
+> wrapper, `lib/submodule_status.py` collector, runtime cache under `~/.cache/submodule-status/`).
 
 ## Overview
 

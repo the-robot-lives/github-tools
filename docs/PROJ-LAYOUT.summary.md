@@ -9,10 +9,11 @@ github-utils/
 │   └── submodule_status.py     # Collector + fzf/HTML/table/JSON
 ├── tests/
 │   └── test_submodule_status.py
-├── docs/                       # Sphinx docs tree → [layout/docs.md](layout/docs.md)
+├── docs/                       # Sphinx docs tree (PROJ-* sweep docs + per-tool references)
 ├── marketing/                  # positioning.md, messaging-worksheet.md
 ├── .readthedocs.yaml
 ├── .gitignore
+├── CLAUDE.md                   # Claude Code guidance
 ├── Makefile                    # compile / test / install / clean / docs → ~/.local/bin + share/
 ├── CHANGELOG.md
 ├── merge-notes.md
