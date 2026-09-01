@@ -7,8 +7,9 @@ Terminal utility package for interactive git-submodule workflows. Two tools: `su
 - `bin/submodule-status` — wrapper: assist, locate `lib/submodule_status.py`, reload on exit 42
 - `lib/submodule_status.py` — parallel git + optional `gh pr list`/`gh run list`; TUI/HTML/table/JSON
 - `bin/submodule-commit` — scan, select, deepest-first commit/push, parent-ref staging
-- `Makefile` — install `bin/submodule-*` + Python share module; `make test` = bash -n + unittest
+- `Makefile` — install `bin/submodule-*` + Python share module; `make test` = bash -n + unittest; `make docs` builds Sphinx
 - k8-lib (external) — config, logging, assist-mode
+- `docs/` — Sphinx/Read the Docs site (myst + sphinx_rtd_theme + nocturne.css overlay); PROJ-* docs with .summary.md companions
 
 ## Execution Flow
 **status:** scan `.gitmodules` → parallel local git (worktrees/ages/dirty) → unique GitHub remotes → cached `gh` PR/Actions → render (fzf keys / HTML clicks open GitHub).
@@ -20,6 +21,10 @@ Terminal utility package for interactive git-submodule workflows. Two tools: `su
 - HTML dashboard is the clickable mouse UI; fzf + OSC-8 for the terminal
 - Deepest-first path-depth sort so nested submodule refs commit before parents stage them
 - Repo-agnostic: git root from cwd
+- Wrapper↔collector IPC via cached snapshot file + `SUBMODULE_STATUS_PY`/`_SNAP` re-invocation
+
+## Documentation Pipeline
+MyST markdown under `docs/`, Sphinx build (`make docs`), published on Read the Docs (`.readthedocs.yaml`); marketing notes unshipped.
 
 ## Ecosystem Fit
 `make compile` / `make install` or monorepo `make install-utilities` (`utilities/shell/github-utils` fan-out) → `~/.local/bin`; `bin/submodule-*` glob auto-picks-up new tools.
