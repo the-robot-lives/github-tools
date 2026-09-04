@@ -2,6 +2,10 @@
 
 Noizu devops CLI for GitHub/GitHub-Enterprise chores: PR/issue helpers, repo bootstrap checks, and bulk submodule-sweep support used by the trl-infra monorepo tooling. Installed to `~/.local/bin` via monorepo `make install-utilities`; shares `Portfolio/Utilities/share/k8-lib` shell conventions with sibling utilities. Coupling map: trl-infra `docs/SUBS.md` (Utilities → git/gh group; pairs with `misc-git-utils`).
 
+- Submodules sit on **`develop`** — keep your checkout on `develop`.
+- All PRs target **`develop`** (feature/bug/task branches fork from `develop`).
+- **`main` is CI/CD-only**: CI/CD automation performs all merges into `main` (release path). Never merge to or push `main` by hand.
+
 ## Build / Test
 
 ```bash
