@@ -100,3 +100,5 @@ Installed via this package's `make compile` / `make install`, or repo-root
 `make install-utilities` (`utilities/shell/github-utils` SUBDIRS fan-out).
 Binaries land on `$PATH` at `~/.local/bin`; the Python collector at
 `~/.local/share/github-utils/`. Layout: [PROJ-LAYOUT.md](PROJ-LAYOUT.md).
+Data artifacts (gh cache files, snapshot JSON, env-var config):
+[PROJ-SCHEMA.md](PROJ-SCHEMA.md).

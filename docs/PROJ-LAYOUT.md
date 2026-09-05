@@ -15,7 +15,7 @@ github-utils/
 │   └── submodule_status.py     #   Collector + fzf/HTML/table/JSON renderer (installed to ~/.local/share/github-utils/)
 ├── tests/
 │   └── test_submodule_status.py  # Unit tests (python3, run via `make test`)
-├── docs/                       # Sphinx documentation → [layout/docs.md](layout/docs.md)
+├── docs/                       # Sphinx documentation (PROJ-* sweep docs + per-tool references)
 │   ├── index.md                #   Docs entry point (toctree)
 │   ├── submodule-status.md     #   submodule-status reference
 │   ├── submodule-commit.md     #   submodule-commit reference
@@ -30,6 +30,7 @@ github-utils/
 │   └── messaging-worksheet.md  #   Messaging draft worksheet
 ├── .readthedocs.yaml           # Read the Docs build config
 ├── .gitignore                  # Editor swaps, .DS_Store, .env*, __pycache__, docs/_build
+├── CLAUDE.md                   # Claude Code guidance (commands, monorepo rules)
 ├── Makefile                    # compile / test / install / clean / docs — bins → ~/.local/bin, lib → ~/.local/share/github-utils
 ├── CHANGELOG.md                # Release notes (Unreleased at top)
 ├── merge-notes.md              # Branch-sweep / merge decision notes (sep-1 sweep)
