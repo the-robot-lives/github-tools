@@ -53,7 +53,9 @@ flowchart TB
 | `bin/submodule-commit` | Bash tool: scan, select, deepest-first commit/push, parent-ref staging |
 | `Makefile` | `make install` copies `bin/submodule-*` to `~/.local/bin` and the Python module to `~/.local/share/github-utils/`; `make test` runs `bash -n` + unit tests |
 | `k8-lib` (external) | Shared shell library: `config.sh`, `common.sh` (`step`/`ok`/`warn`/`die`), `assist.sh` |
-| `README.md` | Install, prerequisites, usage |
+| `docs/` | Sphinx + Read the Docs documentation site (`.readthedocs.yaml`, `conf.py`, nocturne theme); built with `make docs` |
+| `tests/test_submodule_status.py` | Unit tests for the collector (`make test` = `bash -n` wrappers + tests) |
+| `README.md` / `CHANGELOG.md` | Install + usage; release notes |
 
 ## Execution Flow — submodule-status
 
@@ -80,6 +82,17 @@ flowchart TB
 - **Deepest-first commit ordering**: nested submodule refs must commit before parents stage them.
 - **Repo-agnostic**: git root from cwd; not hard-coded to the Noizu monorepo.
 - **Cache is GitHub-only**: `~/.cache/submodule-status/` holds `gh` JSON, last snapshot, and `dashboard.html`. Git operations always live.
+- **Wrapper ↔ collector IPC**: the bash wrapper execs the Python collector, which writes the snapshot to a cache file; fzf preview/action callbacks re-invoke Python with `--snapshot` (path via `SUBMODULE_STATUS_SNAP`, script via `SUBMODULE_STATUS_PY`) instead of re-scanning.
+
+## Documentation Pipeline
+
+Docs are MyST markdown under `docs/`, built with Sphinx (`make docs` →
+`docs/_build/html`) and published on Read the Docs via `.readthedocs.yaml`.
+Theme is sphinx-rtd + a local `nocturne.css` overlay with project logo/favicon
+in `docs/_static/`. Developer references follow the monorepo `PROJ-*` convention
+(`PROJ-LAYOUT`, `PROJ-ARCH`, `PROJ-HOWTO`, `PROJ-FAQ`, each with a `.summary.md`
+companion). Product positioning notes live outside the shipped package in
+`marketing/`.
 
 ## Ecosystem Fit
 
@@ -87,3 +100,5 @@ Installed via this package's `make compile` / `make install`, or repo-root
 `make install-utilities` (`utilities/shell/github-utils` SUBDIRS fan-out).
 Binaries land on `$PATH` at `~/.local/bin`; the Python collector at
 `~/.local/share/github-utils/`. Layout: [PROJ-LAYOUT.md](PROJ-LAYOUT.md).
+Data artifacts (gh cache files, snapshot JSON, env-var config):
+[PROJ-SCHEMA.md](PROJ-SCHEMA.md).
