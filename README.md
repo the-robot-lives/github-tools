@@ -1,102 +1,63 @@
-# github-tools — Git Submodule Workflow Utilities
+# github-tools
 
-Interactive tools for submodule dashboards and bulk git operations across
-repositories with `.gitmodules`.
+**Repo:** https://github.com/the-robot-lives/github-tools
 
-## Installation
+Interactive tools for submodule dashboards and bulk git operations across repositories with `.gitmodules`.
 
-```bash
-make compile    # py_compile the collector
-make install    # bins → ~/.local/bin, lib → ~/.local/share/github-utils
-```
+## What
 
-Also installed by the monorepo `make install-utilities` (`utilities/shell/github-utils` fan-out).
+Two Python/Bash CLIs for working with the Noizu monorepo's fleet of nested submodules:
 
-## Prerequisites
+- `submodule-status` — a dashboard of every submodule: branch, SHA, dirty state, worktrees, open PRs, and Actions runs.
+- `submodule-commit` — interactive bulk commit/push across dirty submodules, with correct nested-ref bubbling.
+
+## Why
+
+The monorepo holds dozens of submodules (submodules inside submodules included). Answering "what's dirty, what has open PRs, what's stale" by hand means looping `git -C` over every checkout; landing a cross-cutting change means committing and pushing each submodule deepest-first so parent refs capture the new pointers. These tools automate both, with fzf-driven selection.
+
+## Getting Started
+
+Prerequisites:
 
 - `python3`, `git`
 - `fzf` — interactive TUI / multi-select (`brew install fzf`)
-- `gh` — optional; required for open PRs and Actions (`gh auth login`)
-
-## Configuration
-
-Docs (Read the Docs / Sphinx): `make docs` or see [docs/index.md](docs/index.md). Config: `.readthedocs.yaml`.
-
-Uses `infra-config.yaml` for shared settings (see [k8-lib README](../../share/k8-lib/README.md)). Every tool accepts `--config <path>`.
-
-Git root is auto-detected from cwd. Works in any repo with `.gitmodules`.
-
-## Tools
-
-| Command | Purpose |
-|---------|---------|
-| `submodule-status` | Dashboard: submodules, worktrees + ages, open PRs/branches, Actions; click through to GitHub |
-| `submodule-commit` | Interactive bulk commit/push for dirty submodules with nested bubbling |
-
----
-
-## `submodule-status`
+- `gh` — optional; required for open PRs and Actions data (`gh auth login`)
 
 ```bash
-submodule-status                 # fzf dashboard (table if no fzf / not a TTY)
+make compile    # py_compile the collector
+make test       # syntax checks + python tests
+make install    # bins -> ~/.local/bin, lib -> ~/.local/share/github-utils
+make docs       # Sphinx docs -> docs/_build/html (ReadTheDocs config included)
+```
+
+Also installed by the monorepo root `make install-utilities`. Uses `infra-config.yaml` for shared settings; every tool accepts `--config <path>`. Git root auto-detected from cwd; works in any repo with `.gitmodules`.
+
+## submodule-status
+
+```bash
+submodule-status                 # fzf dashboard (falls back to a table without fzf/TTY)
 submodule-status --web           # clickable HTML dashboard in the browser
 submodule-status --table         # stdout table (OSC-8 links on a TTY)
 submodule-status --json          # machine-readable snapshot
-submodule-status --local         # skip GitHub (no gh required)
+submodule-status --local         # skip GitHub entirely (no gh required)
 submodule-status Portfolio/Apps  # path prefix filter
+submodule-status --refresh       # bypass the 90s GitHub JSON cache (~/.cache/submodule-status/)
 ```
 
-### What it shows
+Shows every submodule (recursive), plus the umbrella repo: branch, SHA, dirty counts, `git worktree list` with ages, open PRs with check rollups, and recent Actions runs. Keys: enter opens the repo, ctrl-p PRs, ctrl-a Actions, ctrl-b branch, ctrl-w local folder, ctrl-e HTML dashboard, ctrl-r refresh, q quits. OSC-8 hyperlinks work in iTerm2, kitty, WezTerm, Ghostty, VS Code.
 
-- Every submodule (recursive `.gitmodules`), plus the umbrella repo
-- Current branch, SHA, dirty counts
-- `git worktree list` per repo, with ages (HEAD commit / dir mtime)
-- Open PRs (number, branch, title, check rollup) via `gh pr list`
-- Recent Actions runs via `gh run list`
-- Click/key: repo, pulls, Actions, branch, local folder
-
-### Keys (fzf)
-
-| Key | Action |
-|-----|--------|
-| enter / double-click | Open GitHub repo |
-| ctrl-p | Open pull requests |
-| ctrl-a | Open Actions |
-| ctrl-b | Open current branch |
-| ctrl-w | Open local checkout folder |
-| ctrl-e | Open HTML dashboard |
-| ctrl-r | Refresh |
-| q / esc | Quit |
-
-Preview and `--table` emit OSC-8 hyperlinks (iTerm2, kitty, WezTerm, Ghostty, VS Code). `--web` is the fully clickable view.
-
-GitHub JSON is cached under `~/.cache/submodule-status/` (default TTL 90s). `--refresh` bypasses it.
-
----
-
-## `submodule-commit`
+## submodule-commit
 
 ```bash
-submodule-commit                    # Scan, select via fzf, commit + push
-submodule-commit --all              # Commit all dirty submodules (skip fzf)
-submodule-commit --dry-run          # Preview planned actions
-submodule-commit --no-push          # Commit locally, skip git push
-submodule-commit -m "my message"    # Provide commit message non-interactively
-submodule-commit --all -m "wip"     # Fully non-interactive
-submodule-commit --config my.yaml   # Use specific config file
+submodule-commit                    # scan, select via fzf, commit + push
+submodule-commit --all              # all dirty submodules, skip fzf
+submodule-commit --dry-run          # preview planned actions
+submodule-commit --no-push          # commit locally only
+submodule-commit -m "my message"    # non-interactive message
 ```
 
-### Workflow
+Workflow: recursive scan of `.gitmodules` at every nesting level → fzf multi-select with `git status --short` preview → per-submodule `git add .` / commit / `git push origin HEAD`, processed **deepest-first** so nested submodule refs bubble up (each parent stages the updated ref before its own commit) → finally offers to commit and push the updated refs in the root repo.
 
-1. **Scan** — recursively walks `.gitmodules` at every nesting level, checks each submodule for staged, modified, and untracked files
-2. **Select** — fzf multi-select with TAB to toggle; shows change counts and a `git status --short` preview pane
-3. **Commit** — processes deepest-first so nested submodule refs bubble up correctly:
-   - `git add .` in the submodule
-   - `git commit -m <message>`
-   - `git push origin HEAD`
-   - `git add <submodule>` in the parent repo
-4. **Parent** — after all submodules, offers to commit and push the updated refs in the root repo
+## How It Works
 
-### Nested Submodule Handling
-
-If your repo has submodules inside submodules, the tool processes them deepest-first. After committing a deeply nested submodule, it stages the updated ref in the parent, so that when the parent is committed next, it captures the new pointer.
+`submodule-status` is a Python collector (`lib/submodule_status.py`) that merges local git state with gh API results (cached); the `bin/submodule-*` entrypoints are thin Bash wrappers. Repo docs live in `docs/` (Sphinx) and `docs/index.md`.
