@@ -160,6 +160,11 @@ class PrChecksTests(GhWaitCase):
         self.assertEqual(r.returncode, 1)
         self.assertTrue(any("--required" in c for c in self.calls()))
 
+    def test_empty_body_is_error_not_empty(self):
+        scen = {"gh": [{"match": ["pr", "checks"], "responses": [resp("", 0, "warning: something")]}]}
+        r = self.run_cli(scen, "pr-checks", "48", "--allow-empty", "--max-errors", "1", *FAST)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+
     def test_no_checks_timeout_or_allow_empty(self):
         scen = {"gh": [{"match": ["pr", "checks"], "responses": [
             resp("", 1, "no checks reported on the 'x' branch")]}]}
@@ -196,6 +201,15 @@ class PrStateTests(GhWaitCase):
                          "--interval", "0", "--timeout", "10s", "--quiet")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("pr=9", r.stdout)
+
+    def test_number_not_yet_existing_waits(self):
+        missing = resp("", 1, "GraphQL: Could not resolve to a PullRequest with the number of 7. (repository.pullRequest)")
+        scen = {"gh": [{"match": ["pr", "view"], "responses": [missing, resp(pr(7, "OPEN"))]}]}
+        r = self.run_cli(scen, "pr-state", "7", "--until", "exists", "--interval", "0", "--timeout", "10s", "--quiet")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        scen = {"gh": [{"match": ["pr", "view"], "responses": [missing]}]}
+        r = self.run_cli(scen, "pr-state", "7", "--until", "exists", *FAST)
+        self.assertEqual(r.returncode, 2)
 
     def test_open_timeout_and_usage(self):
         scen = {"gh": [{"match": ["pr", "view"], "responses": [resp(pr(7, "OPEN"))]}]}

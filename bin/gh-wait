@@ -340,13 +340,13 @@ def cmd_pr_checks(opts) -> int:
 
     def check():
         proc = run_tool(argv)
-        if proc.returncode != 0 and "no checks reported" in (proc.stderr or "").lower():
-            checks = []
-        elif proc.stdout.strip().startswith("["):
-            # gh exits 8 (pending) / 1 (failed) but still prints JSON
+        # gh pr checks: 0 all passed, 1 some failed, 8 some pending; JSON on stdout for all three.
+        if proc.returncode in (0, 1, 8) and proc.stdout.strip().startswith("["):
             checks = parse_json(proc, argv) or []
+        elif proc.returncode != 0 and "no checks reported" in (proc.stderr or "").lower():
+            checks = []
         else:
-            raise ToolError(f"gh pr checks exited {proc.returncode}: {_first_line(proc.stderr)}")
+            raise ToolError(f"gh pr checks exited {proc.returncode} without JSON: {_first_line(proc.stderr)}")
         rows = [(c.get("name") or "?", _check_conclusion(c)) for c in checks
                 if not _ignored(c.get("name") or "", ignore)]
         if not rows:
@@ -388,7 +388,13 @@ def cmd_pr_state(opts) -> int:
 
     def check():
         if opts.pr is not None:
-            pr = run_json(gh(opts, "pr", "view", str(opts.pr), "--json", _PR_FIELDS))
+            argv = gh(opts, "pr", "view", str(opts.pr), "--json", _PR_FIELDS)
+            proc = run_tool(argv)
+            if proc.returncode != 0 and "could not resolve to a pullrequest" in (proc.stderr or "").lower():
+                return Pending(f"pr {opts.pr} does not exist yet", {"pr": opts.pr})
+            if proc.returncode != 0:
+                raise ToolError(f"gh pr view exited {proc.returncode}: {_first_line(proc.stderr)}")
+            pr = parse_json(proc, argv)
         else:
             prs = run_json(gh(opts, "pr", "list", "--head", opts.head, "--state", "all",
                               "--json", _PR_FIELDS, "-L", "20")) or []
