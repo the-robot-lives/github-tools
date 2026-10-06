@@ -6,10 +6,11 @@ Interactive tools for submodule dashboards and bulk git operations across reposi
 
 ## What
 
-Two Python/Bash CLIs for working with the Noizu monorepo's fleet of nested submodules:
+Python/Bash CLIs for working with the Noizu monorepo's fleet of nested submodules and its GitHub/CI/deploy pipeline:
 
 - `submodule-status` — a dashboard of every submodule: branch, SHA, dirty state, worktrees, open PRs, and Actions runs.
 - `submodule-commit` — interactive bulk commit/push across dirty submodules, with correct nested-ref bubbling.
+- `gh-wait` — poll PR reviews, checks, PR state, Actions runs and k8s rollouts behind one command prefix, with deterministic exit codes.
 
 ## Why
 
@@ -58,6 +59,45 @@ submodule-commit -m "my message"    # non-interactive message
 
 Workflow: recursive scan of `.gitmodules` at every nesting level → fzf multi-select with `git status --short` preview → per-submodule `git add .` / commit / `git push origin HEAD`, processed **deepest-first** so nested submodule refs bubble up (each parent stages the updated ref before its own commit) → finally offers to commit and push the updated refs in the root repo.
 
+## gh-wait
+
+One-prefix poller for PR / CI / deploy status (Python 3 stdlib; wraps read-only `gh` and `kubectl`). Full reference: [docs/gh-wait.md](docs/gh-wait.md).
+
+Exit codes: `0` met/success · `1` met but failed (CI failure, closed unmerged, review failed) · `2` timeout · `3` usage/tool error. Output: one `key=value` summary line (+ indented detail lines), or `--json`. Common flags: `-R owner/name`, `--interval 30s`, `--timeout 30m` (`0` = check once), `--quiet`.
+
+| Subcommand | Waits for |
+|---|---|
+| `pr-review <pr> [--bot robot] [--since now] [--any-comment]` | new bot review, or a "Review failed" bot comment (exit 1) |
+| `pr-checks <pr> [--required-only] [--ignore a,b]` | all checks complete; prints `name=conclusion` |
+| `pr-state <pr> \| --head B --until merged\|closed\|open\|exists` | PR to exist / merge / close; prints number, state, merge sha |
+| `run <id> \| --branch B [--workflow W] [--latest] [--rerun-cancelled]` | workflow run; prints conclusion (`cancelled_no_steps` for no-runner cancels) + jobs `name:conclusion` |
+| `deploy <ns> <deployment\|app> --sha SHA [--argocd APP]` | rollout complete + all ready pods on an image tagged with the sha |
+| `status <pr>` | nothing: one-shot state / checks / latest bot review / mergeability |
+
+Replacing the two ad-hoc loops agents used to write:
+
+```bash
+# a) was: while true; do gh pr view 48 --json reviews,comments | jq ...robot...; sleep 30; done
+gh-wait pr-review 48 -R the-robot-lives/therobotlearns.com               # new robot review; "Review failed" -> exit 1
+gh-wait pr-review 48 -R the-robot-lives/therobotlearns.com --any-comment # ...or any new robot comment
+
+# b) was: gh run watch <id>; gh run view <id> --json conclusion,jobs --jq '...'
+gh-wait run <id> -R the-robot-lives/therobotlearns.com
+# run result=success run=<id> workflow=CI branch=develop sha=... attempt=1 conclusion=success rerun=false
+#   test-backend:success
+#   test-frontend:success
+```
+
+### Agent usage
+
+Use `gh-wait` for **every** wait on GitHub or a rollout. Don't write `sleep` loops, and don't use `gh run watch` (it streams large output). Branch on the exit code, and read the single summary line. Use `--timeout 0` (or `gh-wait status`) for a one-shot read. Pass `--json` when a program parses the result. Allowlist it once in `.claude/settings.json`:
+
+```json
+{ "permissions": { "allow": ["Bash(gh-wait:*)"] } }
+```
+
+gh-wait never prints tokens. Its only write is the opt-in `run --rerun-cancelled`.
+
 ## How It Works
 
-`submodule-status` is a Python collector (`lib/submodule_status.py`) that merges local git state with gh API results (cached); the `bin/submodule-*` entrypoints are thin Bash wrappers. Repo docs live in `docs/` (Sphinx) and `docs/index.md`.
+`gh-wait` is a single stdlib Python script (`bin/gh-wait`); tests drive it against scripted fake `gh`/`kubectl` binaries (`tests/fakes/`). `submodule-status` is a Python collector (`lib/submodule_status.py`) that merges local git state with gh API results (cached); the `bin/submodule-*` entrypoints are thin Bash wrappers. Repo docs live in `docs/` (Sphinx) and `docs/index.md`.
