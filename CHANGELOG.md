@@ -1,6 +1,7 @@
 # Changelog — utilities/shell/github-utils
 
 ## [Unreleased]
+- Added `gh-wait` — one-prefix poller for PR reviews (`pr-review`), checks (`pr-checks`), PR state (`pr-state`), Actions runs (`run`, incl. `cancelled_no_steps` + `--rerun-cancelled`), k8s rollouts to a sha (`deploy`, optional ArgoCD gate) and a one-shot `status`. Deterministic exits 0/1/2/3, key=value or `--json` output. Python 3 stdlib; wraps read-only `gh`/`kubectl`. `make install` installs it; `make install-gh-wait` installs only it.
 - Marketing / about page + Read the Docs Sphinx tree (`.readthedocs.yaml`, `docs/conf.py`, Nocturne theme overlay). Positioning in `marketing/`.
 - Terraform provider lives in its own public repo: [the-robot-lives/terraform-provider-readthedocs](https://github.com/the-robot-lives/terraform-provider-readthedocs).
 - Added `submodule-status` — recursive submodule dashboard (worktrees + ages, open PRs/branches, Actions CI). fzf TUI with clickable OSC-8 links, `--web` HTML dashboard, `--table` / `--json`. Python 3 stdlib collector; `gh` optional. Cached under `~/.cache/submodule-status/`.
