@@ -281,6 +281,20 @@ def _bot_events(data: dict, bot_rx, since: datetime | None, fail_rx) -> list[dic
     return out
 
 
+def _trr_mode(events: list[dict]) -> str:
+    """Classify how the bot reviewed this PR.
+
+    "review-submission": the bot posted a GitHub Review object (kind=='review')
+      — inline line comments plus a roundup body. TRR's current default.
+    "legacy": the bot posted only individual issue comments (kind=='comment'),
+      no Review object — the older scattered-comment style.
+    "none": no bot events at all.
+    """
+    if any(e["kind"] == "review" for e in events):
+        return "review-submission"
+    return "legacy" if events else "none"
+
+
 def cmd_pr_review(opts) -> int:
     bot_rx = re.compile(opts.bot)
     fail_rx = re.compile(opts.fail_pattern)
@@ -290,15 +304,17 @@ def cmd_pr_review(opts) -> int:
     def check():
         data = run_json(argv) or {}
         events = _bot_events(data, bot_rx, since, fail_rx)
+        mode = _trr_mode(events)
         if not opts.any_comment:
             events = [e for e in events if e["kind"] == "review" or e["failure"]]
         if not events:
             return Pending(f"pr {opts.pr}: no matching bot review since {iso(since)}",
-                           {"pr": opts.pr, "since": iso(since)})
+                           {"pr": opts.pr, "since": iso(since), "trr_mode": mode})
         e = events[-1]
         fields = {
             "result": "failure" if e["failure"] else "review",
             "pr": opts.pr,
+            "trr_mode": mode,
             "kind": e["kind"],
             "state": e["state"],
             "author": e["author"],
@@ -651,6 +667,7 @@ def cmd_status(opts) -> int:
         "review_decision": (data.get("reviewDecision") or "").lower() or None,
         "checks": f"pass:{counts['pass']},fail:{counts['fail']},pending:{counts['pending']}",
         "bot": bot["author"] if bot else None,
+        "trr_mode": _trr_mode(events),
         "bot_kind": bot["kind"] if bot else None,
         "bot_state": bot["state"] if bot else None,
         "bot_at": bot["created_at"] if bot else None,

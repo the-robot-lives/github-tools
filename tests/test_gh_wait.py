@@ -96,6 +96,19 @@ class PrReviewTests(GhWaitCase):
         r = self.run_cli(self.scenario_for(data), "pr-review", "48", "--any-comment", *FAST)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_trr_mode_review_submission(self):
+        data = {"reviews": [review("the-robot-reviews", "COMMENTED", "2030-01-01T00:00:00Z")], "comments": []}
+        r = self.run_cli(self.scenario_for(data), "pr-review", "48", *FAST)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("trr_mode=review-submission", r.stdout)
+
+    def test_trr_mode_legacy_with_any_comment(self):
+        data = {"reviews": [],
+                "comments": [comment("the-robot-reviews", "2030-01-01T00:00:00Z", "finding on lib/a.ex:12")]}
+        r = self.run_cli(self.scenario_for(data), "pr-review", "48", "--any-comment", *FAST)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("trr_mode=legacy", r.stdout)
+
     def test_since_filters_old_and_bot_regex(self):
         data = {"reviews": [review("robot-watcher", "COMMENTED", "2024-01-01T00:00:00Z"),
                             review("human", "APPROVED", "2030-01-01T00:00:00Z")], "comments": []}
