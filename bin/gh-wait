@@ -1,0 +1,806 @@
+#!/usr/bin/env python3
+"""gh-wait — poll GitHub PR / CI / Kubernetes deploy status with one command.
+
+Wraps read-only `gh` and `kubectl` calls behind a single command prefix so agents
+can wait on PR reviews, checks, merges, workflow runs and rollouts without
+ad-hoc bash loops (and with a single permission allowlist rule).
+
+Exit codes (all subcommands):
+  0  condition met / success
+  1  condition met but failed (CI failure, PR closed unmerged, review failed, ...)
+  2  timeout
+  3  usage or tool error (gh/kubectl missing, auth, not found, bad args)
+
+Stdlib only. The only write call is `gh run rerun`, and only with
+`run --rerun-cancelled`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+
+VERSION = "0.1.0"
+
+EXIT_OK = 0
+EXIT_FAIL = 1
+EXIT_TIMEOUT = 2
+EXIT_ERROR = 3
+
+OK_CONCLUSIONS = "success,skipped,neutral"
+DEFAULT_FAIL_PATTERN = (
+    r"(?i)review\s+failed|failed\s+to\s+(complete\s+|run\s+|generate\s+)?(the\s+)?review"
+    r"|could\s+not\s+complete\s+(the\s+)?(automated\s+)?review|review\s+(errored|error)"
+)
+
+
+# --------------------------------------------------------------------------- errors
+
+
+class ToolError(Exception):
+    """A gh/kubectl call failed. Transient: tolerated up to --max-errors in a row."""
+
+
+class FatalError(ToolError):
+    """Unrecoverable (tool missing, bad input). Exits 3 immediately."""
+
+
+_REDACTIONS = [
+    re.compile(r"gh[pousr]_[A-Za-z0-9_]{16,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*"),
+    re.compile(r"(?i)\b(bearer|token|password|secret|authorization)\b([\s:=]+)\S+"),
+]
+
+
+def redact(text: str) -> str:
+    """Strip anything token-shaped from tool output before it reaches our output."""
+    out = text or ""
+    for rx in _REDACTIONS:
+        if rx.groups >= 2:
+            out = rx.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", out)
+        else:
+            out = rx.sub("[REDACTED]", out)
+    return out
+
+
+def _first_line(text: str, limit: int = 200) -> str:
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line:
+            return redact(line)[:limit]
+    return ""
+
+
+# --------------------------------------------------------------------------- tool calls
+
+
+def run_tool(argv: list[str], timeout: float = 120) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as exc:
+        raise FatalError(f"{argv[0]} not found on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ToolError(f"{argv[0]} {' '.join(argv[1:3])} timed out") from exc
+
+
+def parse_json(proc: subprocess.CompletedProcess, argv: list[str]):
+    try:
+        return json.loads(proc.stdout or "null")
+    except json.JSONDecodeError as exc:
+        raise ToolError(f"{argv[0]} {' '.join(argv[1:3])}: unparseable JSON output") from exc
+
+
+def run_json(argv: list[str]):
+    proc = run_tool(argv)
+    if proc.returncode != 0:
+        raise ToolError(
+            f"{argv[0]} {' '.join(argv[1:3])} exited {proc.returncode}: {_first_line(proc.stderr)}"
+        )
+    return parse_json(proc, argv)
+
+
+def gh(opts, *args: str) -> list[str]:
+    argv = ["gh", *args]
+    if getattr(opts, "repo", None):
+        argv += ["-R", opts.repo]
+    return argv
+
+
+# --------------------------------------------------------------------------- time helpers
+
+_DUR_RX = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?\s*$")
+
+
+def parse_duration(text: str) -> float:
+    m = _DUR_RX.match(str(text))
+    if not m:
+        raise argparse.ArgumentTypeError(f"invalid duration: {text!r} (use 30s, 5m, 1h)")
+    val, unit = float(m.group(1)), (m.group(2) or "s")
+    return val * {"ms": 0.001, "s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+
+
+def parse_ts(text: str | None) -> datetime | None:
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def parse_since(text: str) -> datetime:
+    """now | ISO-8601 | duration ago (e.g. 10m)."""
+    now = datetime.now(timezone.utc)
+    if text in ("now", ""):
+        return now
+    m = _DUR_RX.match(text)
+    if m:
+        return now - timedelta(seconds=parse_duration(text))
+    dt = parse_ts(text)
+    if dt is None:
+        raise argparse.ArgumentTypeError(f"invalid --since: {text!r} (now | ISO-8601 | 10m)")
+    return dt
+
+
+def iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# --------------------------------------------------------------------------- output
+
+
+def progress(opts, msg: str) -> None:
+    if not opts.quiet:
+        print(f"gh-wait: {redact(msg)}", file=sys.stderr, flush=True)
+
+
+def _fmt_val(v) -> str:
+    if isinstance(v, bool):
+        v = "true" if v else "false"
+    elif v is None:
+        v = "-"
+    s = redact(str(v))
+    return shlex.quote(s) if s == "" or re.search(r"[\s'\"\\$`]", s) else s
+
+
+def emit(opts, command: str, code: int, fields: dict, lines: list[str] | None = None,
+         extra: dict | None = None) -> int:
+    fields = dict(fields)
+    if opts.json:
+        payload = {"command": command, "exit": code, **fields}
+        if extra:
+            payload.update(extra)
+        print(redact(json.dumps(payload, sort_keys=False)))
+    else:
+        summary = " ".join(f"{k}={_fmt_val(v)}" for k, v in fields.items())
+        print(f"{command} {summary}")
+        for line in lines or []:
+            print(f"  {redact(line)}")
+    return code
+
+
+# --------------------------------------------------------------------------- poll loop
+
+
+class Pending:
+    """Returned by a check() that is not done yet."""
+
+    def __init__(self, msg: str, fields: dict | None = None):
+        self.msg = msg
+        self.fields = fields or {}
+
+
+class Done:
+    def __init__(self, code: int, fields: dict, lines: list[str] | None = None,
+                 extra: dict | None = None):
+        self.code = code
+        self.fields = fields
+        self.lines = lines or []
+        self.extra = extra or {}
+
+
+def poll(opts, check) -> Done:
+    deadline = time.monotonic() + opts.timeout
+    errors = 0
+    last_msg = None
+    last_fields: dict = {}
+    while True:
+        try:
+            res = check()
+            errors = 0
+        except FatalError:
+            raise
+        except ToolError as exc:
+            errors += 1
+            if errors >= opts.max_errors:
+                raise
+            progress(opts, f"error ({errors}/{opts.max_errors}): {exc}")
+            if deadline - time.monotonic() <= 0:
+                raise  # out of time while erroring: report the error, not a timeout
+            res = None
+        if isinstance(res, Done):
+            return res
+        if isinstance(res, Pending):
+            last_fields = res.fields
+            if res.msg != last_msg:
+                progress(opts, res.msg)
+                last_msg = res.msg
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            fields = {"result": "timeout", **last_fields}
+            if last_msg:
+                fields["last"] = last_msg
+            return Done(EXIT_TIMEOUT, fields)
+        time.sleep(max(0.0, min(opts.interval, remaining)))
+
+
+# --------------------------------------------------------------------------- pr-review
+
+
+def _bot_events(data: dict, bot_rx, since: datetime | None, fail_rx) -> list[dict]:
+    events = []
+    for r in data.get("reviews") or []:
+        events.append({
+            "kind": "review",
+            "author": (r.get("author") or {}).get("login") or "",
+            "state": r.get("state") or "",
+            "created_at": r.get("submittedAt") or r.get("createdAt"),
+            "body": r.get("body") or "",
+        })
+    for c in data.get("comments") or []:
+        events.append({
+            "kind": "comment",
+            "author": (c.get("author") or {}).get("login") or "",
+            "state": "COMMENTED",
+            "created_at": c.get("createdAt"),
+            "body": c.get("body") or "",
+        })
+    out = []
+    for e in events:
+        ts = parse_ts(e["created_at"])
+        if ts is None or not bot_rx.search(e["author"]):
+            continue
+        if since is not None and ts < since:
+            continue
+        e["ts"] = ts
+        e["failure"] = bool(fail_rx.search(e["body"]))
+        out.append(e)
+    out.sort(key=lambda e: e["ts"])
+    return out
+
+
+def cmd_pr_review(opts) -> int:
+    bot_rx = re.compile(opts.bot)
+    fail_rx = re.compile(opts.fail_pattern)
+    since = opts.since
+    argv = gh(opts, "pr", "view", str(opts.pr), "--json", "number,state,url,reviews,comments")
+
+    def check():
+        data = run_json(argv) or {}
+        events = _bot_events(data, bot_rx, since, fail_rx)
+        if not opts.any_comment:
+            events = [e for e in events if e["kind"] == "review" or e["failure"]]
+        if not events:
+            return Pending(f"pr {opts.pr}: no matching bot review since {iso(since)}",
+                           {"pr": opts.pr, "since": iso(since)})
+        e = events[-1]
+        fields = {
+            "result": "failure" if e["failure"] else "review",
+            "pr": opts.pr,
+            "kind": e["kind"],
+            "state": e["state"],
+            "author": e["author"],
+            "created_at": e["created_at"],
+            "failure": e["failure"],
+        }
+        extra = {"body_excerpt": e["body"][:500], "count": len(events)}
+        lines = [_first_line(e["body"], 160)] if e["body"].strip() else []
+        return Done(EXIT_FAIL if e["failure"] else EXIT_OK, fields, lines, extra)
+
+    return finish(opts, "pr-review", poll(opts, check))
+
+
+# --------------------------------------------------------------------------- pr-checks
+
+_PENDING_STATES = {"pending", "queued", "in_progress", "waiting", "requested", "expected", "startup_failure_pending"}
+
+
+def _check_conclusion(c: dict) -> str:
+    bucket = (c.get("bucket") or "").lower()
+    state = (c.get("state") or "").lower()
+    if bucket == "pending" or state in _PENDING_STATES:
+        return "pending"
+    if bucket == "skipping" and state in ("", "skipping"):
+        return "skipped"
+    return state or bucket or "unknown"
+
+
+def _ignored(name: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatchcase(name, p) for p in patterns)
+
+
+def cmd_pr_checks(opts) -> int:
+    ok = {s.strip().lower() for s in opts.ok.split(",") if s.strip()}
+    ignore = [s.strip() for s in (opts.ignore or "").split(",") if s.strip()]
+    argv = gh(opts, "pr", "checks", str(opts.pr), "--json", "name,state,bucket,workflow,link")
+    if opts.required_only:
+        argv.append("--required")
+
+    def check():
+        proc = run_tool(argv)
+        # gh pr checks: 0 all passed, 1 some failed, 8 some pending; JSON on stdout for all three.
+        if proc.returncode in (0, 1, 8) and proc.stdout.strip().startswith("["):
+            checks = parse_json(proc, argv) or []
+        elif proc.returncode != 0 and "no checks reported" in (proc.stderr or "").lower():
+            checks = []
+        else:
+            raise ToolError(f"gh pr checks exited {proc.returncode} without JSON: {_first_line(proc.stderr)}")
+        rows = [(c.get("name") or "?", _check_conclusion(c)) for c in checks
+                if not _ignored(c.get("name") or "", ignore)]
+        if not rows:
+            if opts.allow_empty:
+                return Done(EXIT_OK, {"result": "success", "pr": opts.pr, "total": 0})
+            return Pending(f"pr {opts.pr}: no checks reported yet", {"pr": opts.pr})
+        pending = [n for n, c in rows if c == "pending"]
+        failed = [n for n, c in rows if c != "pending" and c not in ok]
+        fields = {"pr": opts.pr, "total": len(rows), "passed": len(rows) - len(pending) - len(failed),
+                  "failed": len(failed), "pending": len(pending)}
+        lines = [f"{_fmt_val(n)}={c}" for n, c in rows]
+        extra = {"checks": [{"name": n, "conclusion": c} for n, c in rows]}
+        if failed and (opts.fail_fast or not pending):
+            return Done(EXIT_FAIL, {"result": "failure", **fields}, lines, extra)
+        if pending:
+            return Pending(f"pr {opts.pr}: {len(pending)}/{len(rows)} checks pending", fields)
+        return Done(EXIT_OK, {"result": "success", **fields}, lines, extra)
+
+    return finish(opts, "pr-checks", poll(opts, check))
+
+
+# --------------------------------------------------------------------------- pr-state
+
+_PR_FIELDS = "number,state,mergeCommit,mergedAt,url,headRefName"
+
+
+def _pick_pr(prs: list[dict]) -> dict | None:
+    if not prs:
+        return None
+    open_prs = [p for p in prs if p.get("state") == "OPEN"]
+    pool = open_prs or prs
+    return max(pool, key=lambda p: p.get("number") or 0)
+
+
+def cmd_pr_state(opts) -> int:
+    if (opts.pr is None) == (opts.head is None):
+        raise UsageError("pr-state needs exactly one of <pr> or --head BRANCH")
+    until = opts.until
+
+    def check():
+        if opts.pr is not None:
+            argv = gh(opts, "pr", "view", str(opts.pr), "--json", _PR_FIELDS)
+            proc = run_tool(argv)
+            if proc.returncode != 0 and "could not resolve to a pullrequest" in (proc.stderr or "").lower():
+                return Pending(f"pr {opts.pr} does not exist yet", {"pr": opts.pr})
+            if proc.returncode != 0:
+                raise ToolError(f"gh pr view exited {proc.returncode}: {_first_line(proc.stderr)}")
+            pr = parse_json(proc, argv)
+        else:
+            prs = run_json(gh(opts, "pr", "list", "--head", opts.head, "--state", "all",
+                              "--json", _PR_FIELDS, "-L", "20")) or []
+            pr = _pick_pr(prs)
+        if not pr:
+            return Pending(f"no PR for head {opts.head} yet", {"head": opts.head})
+        state = (pr.get("state") or "").upper()
+        fields = {
+            "pr": pr.get("number"),
+            "state": state.lower(),
+            "merge_sha": (pr.get("mergeCommit") or {}).get("oid") if state == "MERGED" else None,
+            "head": pr.get("headRefName"),
+            "url": pr.get("url"),
+        }
+        if until == "exists":
+            return Done(EXIT_OK, {"result": "success", **fields})
+        if until == "merged":
+            if state == "MERGED":
+                return Done(EXIT_OK, {"result": "success", **fields})
+            if state == "CLOSED":
+                return Done(EXIT_FAIL, {"result": "closed_unmerged", **fields})
+        elif until == "closed":
+            if state in ("MERGED", "CLOSED"):
+                return Done(EXIT_OK, {"result": "success", **fields})
+        elif until == "open":
+            if state == "OPEN":
+                return Done(EXIT_OK, {"result": "success", **fields})
+            return Done(EXIT_FAIL, {"result": state.lower(), **fields})
+        return Pending(f"pr {fields['pr']}: state={state.lower()} waiting for {until}", fields)
+
+    return finish(opts, "pr-state", poll(opts, check))
+
+
+# --------------------------------------------------------------------------- run
+
+_RUN_FIELDS = "databaseId,status,conclusion,attempt,workflowName,headBranch,headSha,url,jobs"
+
+
+def cmd_run(opts) -> int:
+    if (opts.run_id is None) == (opts.branch is None):
+        raise UsageError("run needs exactly one of <run-id> or --branch BRANCH")
+    ok = {s.strip().lower() for s in opts.ok.split(",") if s.strip()}
+    state = {"run_id": opts.run_id, "rerun": False, "min_attempt": 0}
+
+    def resolve():
+        argv = gh(opts, "run", "list", "--branch", opts.branch, "-L", "1",
+                  "--json", "databaseId,status,conclusion,createdAt,workflowName")
+        if opts.workflow:
+            argv += ["--workflow", opts.workflow]
+        runs = run_json(argv) or []
+        return str(runs[0]["databaseId"]) if runs else None
+
+    def check():
+        if opts.branch is not None and (state["run_id"] is None or opts.latest):
+            rid = resolve()
+            if rid is None:
+                return Pending(f"no runs on branch {opts.branch} yet", {"branch": opts.branch})
+            if rid != state["run_id"] and state["run_id"] is not None:
+                progress(opts, f"newer run {rid} replaces {state['run_id']}")
+            state["run_id"] = rid
+        rid = state["run_id"]
+        run = run_json(gh(opts, "run", "view", str(rid), "--json", _RUN_FIELDS)) or {}
+        jobs = run.get("jobs") or []
+        attempt = run.get("attempt") or 1
+        status = (run.get("status") or "").lower()
+        base = {"run": rid, "workflow": run.get("workflowName"), "branch": run.get("headBranch"),
+                "sha": (run.get("headSha") or "")[:12] or None, "attempt": attempt}
+        if status != "completed" or attempt < state["min_attempt"]:
+            done_jobs = sum(1 for j in jobs if (j.get("status") or "").lower() == "completed")
+            return Pending(f"run {rid}: status={status or 'unknown'} jobs={done_jobs}/{len(jobs)}", base)
+        conclusion = (run.get("conclusion") or "").lower() or "unknown"
+        no_steps = conclusion == "cancelled" and all(not (j.get("steps") or []) for j in jobs)
+        if no_steps and opts.rerun_cancelled and not state["rerun"]:
+            proc = run_tool(gh(opts, "run", "rerun", str(rid)))
+            if proc.returncode != 0:
+                raise FatalError(f"gh run rerun {rid} failed: {_first_line(proc.stderr)}")
+            state["rerun"] = True
+            state["min_attempt"] = attempt + 1
+            return Pending(f"run {rid}: cancelled with 0 steps; rerun requested (attempt {attempt + 1})", base)
+        effective = "cancelled_no_steps" if no_steps else conclusion
+        lines = [f"{j.get('name') or '?'}:{(j.get('conclusion') or j.get('status') or '-').lower()}"
+                 for j in jobs]
+        extra = {"url": run.get("url"), "jobs": [
+            {"name": j.get("name"), "conclusion": (j.get("conclusion") or "").lower() or None,
+             "steps": len(j.get("steps") or [])} for j in jobs]}
+        fields = {"result": "success" if conclusion in ok else "failure", **base,
+                  "conclusion": effective, "rerun": state["rerun"]}
+        return Done(EXIT_OK if conclusion in ok else EXIT_FAIL, fields, lines, extra)
+
+    return finish(opts, "run", poll(opts, check))
+
+
+# --------------------------------------------------------------------------- deploy
+
+
+def _image_tag(image: str) -> str:
+    ref = image.split("@", 1)[0]
+    last = ref.rsplit("/", 1)[-1]
+    return last.split(":", 1)[1] if ":" in last else ""
+
+
+def sha_token(sha: str) -> str:
+    s = sha.strip().lower()
+    if s.startswith("sha-"):
+        s = s[4:]
+    return s[:7]
+
+
+def _pod_ready(pod: dict) -> bool:
+    if pod.get("metadata", {}).get("deletionTimestamp"):
+        return False
+    if (pod.get("status") or {}).get("phase") != "Running":
+        return False
+    return any(c.get("type") == "Ready" and c.get("status") == "True"
+               for c in (pod.get("status") or {}).get("conditions") or [])
+
+
+def _pod_images(pod: dict, container: str | None) -> list[str]:
+    statuses = (pod.get("status") or {}).get("containerStatuses") or []
+    images = [(c.get("name"), c.get("image") or "") for c in statuses]
+    if not images:
+        images = [(c.get("name"), c.get("image") or "") for c in (pod.get("spec") or {}).get("containers") or []]
+    return [img for name, img in images if container is None or name == container]
+
+
+def kubectl(opts, *args: str) -> list[str]:
+    argv = ["kubectl"]
+    if opts.kubeconfig:
+        argv += ["--kubeconfig", opts.kubeconfig]
+    if opts.context:
+        argv += ["--context", opts.context]
+    return argv + list(args)
+
+
+def _find_deployments(opts) -> list[dict]:
+    ns = opts.namespace
+    target = opts.target
+    if "=" in target:
+        selectors = [target]
+    else:
+        proc = run_tool(kubectl(opts, "get", "deployment", target, "-n", ns, "-o", "json"))
+        if proc.returncode == 0:
+            return [parse_json(proc, ["kubectl", "get", "deployment"])]
+        if "notfound" not in (proc.stderr or "").lower().replace(" ", ""):
+            raise ToolError(f"kubectl get deployment exited {proc.returncode}: {_first_line(proc.stderr)}")
+        selectors = [f"app.kubernetes.io/name={target}", f"app={target}"]
+    for sel in selectors:
+        data = run_json(kubectl(opts, "get", "deployments", "-n", ns, "-l", sel, "-o", "json")) or {}
+        items = data.get("items") or []
+        if items:
+            return items
+    raise ToolError(f"no deployment named or labelled {target} in namespace {ns}")
+
+
+def cmd_deploy(opts) -> int:
+    token = sha_token(opts.sha)
+    if len(token) < 4:
+        raise UsageError("--sha must be at least 4 hex characters")
+
+    def check():
+        deps = _find_deployments(opts)
+        total_ready = total_want = 0
+        image = None
+        lines: list[str] = []
+        waiting: list[str] = []
+        for dep in deps:
+            name = dep.get("metadata", {}).get("name")
+            spec = dep.get("spec") or {}
+            st = dep.get("status") or {}
+            want = spec.get("replicas", 1)
+            for cond in st.get("conditions") or []:
+                if cond.get("type") == "Progressing" and cond.get("reason") == "ProgressDeadlineExceeded":
+                    return Done(EXIT_FAIL, {"result": "failure", "reason": "ProgressDeadlineExceeded",
+                                            "deployment": name, "namespace": opts.namespace})
+            rolled = (st.get("observedGeneration", 0) >= dep.get("metadata", {}).get("generation", 0)
+                      and st.get("updatedReplicas", 0) == want
+                      and st.get("availableReplicas", 0) == want
+                      and st.get("replicas", 0) == want)
+            labels = (spec.get("selector") or {}).get("matchLabels") or {}
+            sel = ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
+            pods = (run_json(kubectl(opts, "get", "pods", "-n", opts.namespace, "-l", sel, "-o", "json"))
+                    or {}).get("items") or []
+            ready = [p for p in pods if _pod_ready(p)]
+            matching = 0
+            for p in ready:
+                imgs = _pod_images(p, opts.container)
+                hit = [i for i in imgs if token in _image_tag(i).lower()]
+                if hit:
+                    matching += 1
+                    image = image or hit[0]
+            stale = len(ready) - matching
+            total_ready += matching
+            total_want += want
+            lines.append(f"{name}: ready={matching}/{want} stale_ready={stale} rollout={'complete' if rolled else 'in_progress'}")
+            if not rolled or stale or matching < want:
+                waiting.append(f"{name} ready={matching}/{want} stale={stale} rollout={'complete' if rolled else 'in_progress'}")
+        fields = {"namespace": opts.namespace, "target": opts.target, "sha": token,
+                  "image": image, "ready": f"{total_ready}/{total_want}"}
+        argo = {}
+        if opts.argocd:
+            app = run_json(kubectl(opts, "get", "applications.argoproj.io", opts.argocd,
+                                   "-n", opts.argocd_namespace, "-o", "json")) or {}
+            ast = app.get("status") or {}
+            argo = {"argocd_sync": (ast.get("sync") or {}).get("status"),
+                    "argocd_health": (ast.get("health") or {}).get("status")}
+            fields.update(argo)
+            if argo["argocd_sync"] != "Synced" or argo["argocd_health"] != "Healthy":
+                waiting.append(f"argocd {opts.argocd} {argo['argocd_sync']}/{argo['argocd_health']}")
+        if waiting:
+            return Pending("; ".join(waiting), fields)
+        return Done(EXIT_OK, {"result": "success", **fields}, lines)
+
+    return finish(opts, "deploy", poll(opts, check))
+
+
+# --------------------------------------------------------------------------- status
+
+
+def _rollup(items: list[dict]) -> tuple[dict, list[str]]:
+    counts = {"pass": 0, "fail": 0, "pending": 0}
+    failing = []
+    for it in items:
+        name = it.get("name") or it.get("context") or "?"
+        if it.get("__typename") == "StatusContext" or "context" in it:
+            st = (it.get("state") or "").lower()
+            concl = {"success": "success", "pending": "pending", "expected": "pending"}.get(st, st)
+        else:
+            status = (it.get("status") or "").lower()
+            concl = (it.get("conclusion") or "").lower() if status == "completed" else "pending"
+        if concl == "pending":
+            counts["pending"] += 1
+        elif concl in ("success", "skipped", "neutral"):
+            counts["pass"] += 1
+        else:
+            counts["fail"] += 1
+            failing.append(f"{name}={concl}")
+    return counts, failing
+
+
+def cmd_status(opts) -> int:
+    fields_q = ("number,title,state,isDraft,mergeable,mergeStateStatus,reviewDecision,"
+                "headRefName,baseRefName,url,mergeCommit,statusCheckRollup,reviews,comments")
+    data = run_json(gh(opts, "pr", "view", str(opts.pr), "--json", fields_q)) or {}
+    counts, failing = _rollup(data.get("statusCheckRollup") or [])
+    events = _bot_events(data, re.compile(opts.bot), None, re.compile(opts.fail_pattern))
+    bot = events[-1] if events else None
+    state = (data.get("state") or "").lower()
+    fields = {
+        "pr": data.get("number"),
+        "state": state,
+        "draft": data.get("isDraft"),
+        "mergeable": (data.get("mergeable") or "").lower() or None,
+        "merge_state": (data.get("mergeStateStatus") or "").lower() or None,
+        "review_decision": (data.get("reviewDecision") or "").lower() or None,
+        "checks": f"pass:{counts['pass']},fail:{counts['fail']},pending:{counts['pending']}",
+        "bot": bot["author"] if bot else None,
+        "bot_kind": bot["kind"] if bot else None,
+        "bot_state": bot["state"] if bot else None,
+        "bot_at": bot["created_at"] if bot else None,
+        "bot_failure": bot["failure"] if bot else None,
+        "merge_sha": (data.get("mergeCommit") or {}).get("oid") if state == "merged" else None,
+    }
+    lines = [f"head={data.get('headRefName')} base={data.get('baseRefName')} url={data.get('url')}"]
+    lines += [f"failing {f}" for f in failing]
+    return emit(opts, "status", EXIT_OK, fields, lines,
+                {"title": data.get("title"), "url": data.get("url"), "failing_checks": failing})
+
+
+# --------------------------------------------------------------------------- cli
+
+
+class UsageError(Exception):
+    pass
+
+
+def finish(opts, command: str, done: Done) -> int:
+    return emit(opts, command, done.code, done.fields, done.lines, done.extra)
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):  # argparse exits 2 by default; 2 is our timeout code
+        self.print_usage(sys.stderr)
+        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        sys.exit(EXIT_ERROR)
+
+
+EPILOG = "exit codes: 0 met/success, 1 met-but-failed, 2 timeout, 3 usage/tool error"
+
+
+def build_parser() -> argparse.ArgumentParser:
+    common = Parser(add_help=False)
+    g = common.add_argument_group("common options")
+    g.add_argument("-R", "--repo", help="owner/name (default: gh infers from the current git remote)")
+    g.add_argument("--interval", type=parse_duration, default=30.0, help="poll interval (default 30s)")
+    g.add_argument("--timeout", type=parse_duration, default=1800.0,
+                   help="give up after this long, exit 2 (default 30m; 0 = check once)")
+    g.add_argument("--quiet", "-q", action="store_true", help="no progress lines on stderr")
+    g.add_argument("--json", action="store_true", help="print the result as one JSON object")
+    g.add_argument("--max-errors", type=int, default=3,
+                   help="consecutive gh/kubectl errors tolerated before exit 3 (default 3)")
+
+    p = Parser(prog="gh-wait", description=__doc__.split("\n\n")[0], epilog=EPILOG,
+               formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--version", action="version", version=f"gh-wait {VERSION}")
+    sub = p.add_subparsers(dest="cmd", metavar="<command>", parser_class=Parser)
+
+    def add(name, help_, desc=None):
+        return sub.add_parser(name, parents=[common], help=help_, description=desc or help_,
+                              epilog=EPILOG)
+
+    s = add("pr-review", "wait for a new bot review (or failure comment) on a PR",
+            "Wait until a review by an author matching --bot appears after --since. Bot comments "
+            "matching --fail-pattern (e.g. 'Review failed') also end the wait, with exit 1. "
+            "--any-comment makes any matching bot comment end the wait.")
+    s.add_argument("pr")
+    s.add_argument("--bot", default="robot", help="author login regex (default: robot)")
+    s.add_argument("--since", type=parse_since, default="now",
+                   help="now (default) | ISO-8601 | duration ago, e.g. 10m")
+    s.add_argument("--any-comment", action="store_true", help="any matching bot comment counts")
+    s.add_argument("--fail-pattern", default=DEFAULT_FAIL_PATTERN,
+                   help="regex marking a review/comment body as a failure")
+    s.set_defaults(func=cmd_pr_review)
+
+    s = add("pr-checks", "wait until all PR checks complete",
+            "Wait until every check on the PR completes; print each name=conclusion. "
+            "Exit 0 when all conclusions are in --ok, else 1.")
+    s.add_argument("pr")
+    s.add_argument("--required-only", action="store_true", help="only required checks")
+    s.add_argument("--ignore", help="comma-separated check names/globs to ignore")
+    s.add_argument("--ok", default=OK_CONCLUSIONS, help=f"passing conclusions (default {OK_CONCLUSIONS})")
+    s.add_argument("--fail-fast", action="store_true", help="exit 1 on the first failed check")
+    s.add_argument("--allow-empty", action="store_true", help="no checks at all counts as success")
+    s.set_defaults(func=cmd_pr_checks)
+
+    s = add("pr-state", "wait for a PR to exist / merge / close",
+            "Wait for a PR (by number or --head branch) to reach --until. merged: closed-unmerged "
+            "exits 1. open: merged/closed exits 1.")
+    s.add_argument("pr", nargs="?")
+    s.add_argument("--head", help="find the PR by head branch instead of number")
+    s.add_argument("--until", choices=["merged", "closed", "open", "exists"], default="merged")
+    s.set_defaults(func=cmd_pr_state)
+
+    s = add("run", "wait for a GitHub Actions workflow run",
+            "Wait for a workflow run to complete; print conclusion and jobs name:conclusion. "
+            "A run cancelled before any step ran (no runner) reports conclusion=cancelled_no_steps.")
+    s.add_argument("run_id", nargs="?", metavar="run-id")
+    s.add_argument("--branch", help="use the newest run on this branch")
+    s.add_argument("--workflow", help="workflow name or file (with --branch)")
+    s.add_argument("--latest", action="store_true",
+                   help="re-resolve the newest run on every poll (follows new pushes)")
+    s.add_argument("--rerun-cancelled", action="store_true",
+                   help="rerun once if cancelled with 0 steps (the only write gh-wait performs)")
+    s.add_argument("--ok", default=OK_CONCLUSIONS, help=f"passing conclusions (default {OK_CONCLUSIONS})")
+    s.set_defaults(func=cmd_run)
+
+    s = add("deploy", "wait for a k8s deployment to run an image built from a sha",
+            "Wait until the rollout is complete and every ready pod runs an image whose tag contains "
+            "the sha (first 7 chars, e.g. sha-abc1234). Target is a deployment name, an "
+            "app.kubernetes.io/name / app label value, or an explicit selector (k=v). "
+            "ProgressDeadlineExceeded exits 1.")
+    s.add_argument("namespace")
+    s.add_argument("target", metavar="deployment|app-label")
+    s.add_argument("--sha", required=True)
+    s.add_argument("--container", help="only check this container's image (default: any container)")
+    s.add_argument("--context", default="noizu", help="kube context (default noizu; '' = current)")
+    s.add_argument("--kubeconfig", default=None,
+                   help="kubeconfig path (default ~/.kube/noizu/config if present)")
+    s.add_argument("--argocd", metavar="APP", help="also require this ArgoCD Application Synced+Healthy")
+    s.add_argument("--argocd-namespace", default="infra",
+                   help="namespace of ArgoCD Applications (default infra, the noizu cluster)")
+    s.set_defaults(func=cmd_deploy)
+
+    s = add("status", "one-shot PR summary (state, checks, latest bot review, mergeability)")
+    s.add_argument("pr")
+    s.add_argument("--bot", default="robot", help="author login regex (default: robot)")
+    s.add_argument("--fail-pattern", default=DEFAULT_FAIL_PATTERN)
+    s.set_defaults(func=cmd_status)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    opts = parser.parse_args(argv)
+    if not getattr(opts, "func", None):
+        parser.print_help(sys.stderr)
+        return EXIT_ERROR
+    if getattr(opts, "cmd", None) == "deploy" and opts.kubeconfig is None:
+        default_kc = os.path.expanduser("~/.kube/noizu/config")
+        opts.kubeconfig = default_kc if os.path.exists(default_kc) else None
+    elif getattr(opts, "kubeconfig", None):
+        opts.kubeconfig = os.path.expanduser(opts.kubeconfig)
+    try:
+        return opts.func(opts)
+    except UsageError as exc:
+        print(f"gh-wait {opts.cmd}: error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except ToolError as exc:
+        if opts.json:
+            print(json.dumps({"command": opts.cmd, "exit": EXIT_ERROR, "result": "error",
+                              "error": redact(str(exc))}))
+        else:
+            print(f"{opts.cmd} result=error error={_fmt_val(str(exc))}")
+        return EXIT_ERROR
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

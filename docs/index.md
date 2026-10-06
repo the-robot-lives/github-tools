@@ -80,6 +80,7 @@ about
 install
 submodule-status
 submodule-commit
+gh-wait
 PROJ-HOWTO
 PROJ-ARCH
 PROJ-FAQ
