@@ -42,7 +42,10 @@ matches `--fail-pattern` (default: matches "Review failed", "could not complete
 the automated review", ...) also ends the wait, with exit 1.
 With `--any-comment`, any matching bot comment ends the wait.
 
-Prints `result=review|failure kind state author created_at failure`.
+Prints `result=review|failure trr_mode kind state author created_at failure`.
+`trr_mode` is `review-submission` (the bot posted a GitHub Review object with
+inline comments) or `legacy` (the bot posted only individual issue comments, no
+Review — pass `--any-comment` to match those).
 
 ### `pr-checks <pr> [--required-only] [--ignore NAME,...] [--ok LIST] [--fail-fast] [--allow-empty]`
 
@@ -83,8 +86,9 @@ be `Synced` + `Healthy`. Kube defaults: `--context noizu`, and
 ### `status <pr>`
 
 Reads the PR once, without waiting: state, draft, mergeable/merge state, review
-decision, check counts, latest bot review/comment (with failure flag), and
-merge sha. Failing checks are listed below the summary line.
+decision, check counts, latest bot review/comment (with failure flag), its
+`trr_mode` (`review-submission` if the bot posted a GitHub Review, `legacy` if
+only issue comments), and merge sha. Failing checks are listed below the summary line.
 
 ## Examples
 
