@@ -212,6 +212,8 @@ class Done:
 
 
 def poll(opts, check) -> Done:
+    if getattr(opts, "snapshot", False):
+        return snapshot(opts, check)
     deadline = time.monotonic() + opts.timeout
     errors = 0
     last_msg = None
@@ -244,6 +246,26 @@ def poll(opts, check) -> Done:
                 fields["last"] = last_msg
             return Done(EXIT_TIMEOUT, fields)
         time.sleep(max(0.0, min(opts.interval, remaining)))
+
+
+def snapshot(opts, check) -> Done:
+    """One-shot variant of poll() for --snapshot: check the current state,
+    report it, never sleep or retry. Terminal states return their normal
+    Done (exit 0/1); a not-yet-settled state returns exit 2 with
+    result=pending so a caller can distinguish "still running" from
+    "timed out waiting". Tool errors surface immediately as exit 3."""
+    try:
+        res = check()
+    except (FatalError, ToolError):
+        raise  # one attempt, no retries — snapshot is a peek, not a wait
+    if isinstance(res, Done):
+        return res
+    if isinstance(res, Pending):
+        fields = {"result": "pending", **res.fields}
+        if res.msg:
+            fields["last"] = res.msg
+        return Done(EXIT_TIMEOUT, fields)
+    return Done(EXIT_TIMEOUT, {"result": "pending"})
 
 
 # --------------------------------------------------------------------------- pr-review
@@ -698,7 +720,8 @@ class Parser(argparse.ArgumentParser):
         sys.exit(EXIT_ERROR)
 
 
-EPILOG = "exit codes: 0 met/success, 1 met-but-failed, 2 timeout, 3 usage/tool error"
+EPILOG = ("exit codes: 0 met/success, 1 met-but-failed, 2 timeout (or pending with --snapshot), "
+          "3 usage/tool error")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -712,6 +735,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--json", action="store_true", help="print the result as one JSON object")
     g.add_argument("--max-errors", type=int, default=3,
                    help="consecutive gh/kubectl errors tolerated before exit 3 (default 3)")
+    g.add_argument("--snapshot", action="store_true",
+                   help="check once and report the current state instead of polling: "
+                        "terminal states exit 0/1 as usual, not-yet-settled exits 2 with "
+                        "result=pending. For non-blocking agents; pair with Monitor-based "
+                        "watches rather than a blocking foreground wait")
 
     p = Parser(prog="gh-wait", description=__doc__.split("\n\n")[0], epilog=EPILOG,
                formatter_class=argparse.RawDescriptionHelpFormatter)
