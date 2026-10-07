@@ -12,7 +12,9 @@
 #                        resolves the installation whose account matches the
 #                        target repo's owner — from -R/--repo, GH_REPO, or the
 #                        cwd's origin remote — via GET /app/installations.
-#                        A number pins that installation explicitly.
+#                        With no repo context, succeeds only when the app has
+#                        exactly one installation. A number pins that
+#                        installation explicitly.
 #   AGH_PRIVATE_KEY_PATH app's PEM private key (default
 #                        ~/Work/Space/Noizu/secrets/noizu-agentic-coder.private-key.pem)
 #
@@ -30,7 +32,7 @@ VERSION="0.3.0"
 
 die() { echo "agh: $*" >&2; exit 3; }
 
-[[ ${1:-} == "--help" || ${1:-} == "-h" ]] && sed -n '2,/ Dependencies/p' "$0" | sed '$d' && exit 0
+[[ ${1:-} == "--help" || ${1:-} == "-h" ]] && sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d' && exit 0
 [[ ${1:-} == "--version" ]] && echo "agh $VERSION" && exit 0
 
 PRINT_TOKEN=0
@@ -73,6 +75,7 @@ gh_api() {  # method path [jq-filter] -> body; concise errors, no secrets
 # --- installation selection ---------------------------------------------------
 # Target repo owner: gh's -R/--repo (space- or =-joined), GH_REPO, else the
 # cwd's origin remote. Only GitHub remotes count; anything else yields "".
+# Like gh itself, the LAST -R wins when several are passed.
 repo_owner() {
     local i=$# v
     while ((i > 0)); do
@@ -101,15 +104,19 @@ if [[ $inst != auto && ! $inst =~ ^[0-9]+$ ]]; then
 fi
 if [[ $inst == auto ]]; then
     owner=$(repo_owner "$@")
-    # GET /app/installations caps at 100 per page; accumulate pages until a
-    # short page (or a 50-page safety cap) so owners beyond the first 100 hit.
+    # GET /app/installations caps at 100 per page and gh_api drops the Link
+    # header; accumulate pages until a short page so owners beyond the first
+    # 100 hit. A 50-page cap bounds the loop; hitting it is fatal below, not
+    # silent truncation.
     installations='[]'
+    truncated=0
     page=1
-    while ((page <= 50)); do
+    while :; do
         body=$(gh_api GET "/app/installations?per_page=100&page=$page" '.')
         installations=$(jq -s '.[0] + .[1]' <<<"$installations"$'\n'"$body")
         (( $(jq 'length' <<<"$body") < 100 )) && break
         page=$((page + 1))
+        if ((page > 50)); then truncated=1; break; fi
     done
     [[ $installations != '[]' ]] \
         || die "no installation found for app $AGH_APP_ID (install the app on at least one org/repo)"
@@ -121,11 +128,17 @@ if [[ $inst == auto ]]; then
                 | .id' <<<"$installations" | head -n1)
         if [[ -z $inst ]]; then
             logins=$(jq -r '.[].account.login // "?"' <<<"$installations" | paste -sd, -)
-            die "app $AGH_APP_ID is not installed on \"$owner\" (installed on: $logins)"
+            die "app $AGH_APP_ID is not installed on \"$owner\" (installed on: $logins)${truncated:+ — list truncated at 5000 installations, pin AGH_INSTALLATION_ID if the target is beyond it}"
         fi
     else
-        # No repo context to key off: keep the historical first-install default.
-        inst=$(jq -r '.[0].id' <<<"$installations")
+        # No repo context and multiple installs: refuse rather than mint a
+        # token for an arbitrary account.
+        if (( $(jq 'length' <<<"$installations") == 1 )); then
+            inst=$(jq -r '.[0].id' <<<"$installations")
+        else
+            logins=$(jq -r '.[].account.login // "?"' <<<"$installations" | paste -sd, -)
+            die "no repo context to select an installation for app $AGH_APP_ID (installed on: $logins); pass -R owner/repo or set AGH_INSTALLATION_ID"
+        fi
     fi
 fi
 token=$(gh_api POST "/app/installations/$inst/access_tokens" '.token // empty')
