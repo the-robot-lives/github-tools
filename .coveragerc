@@ -1,0 +1,13 @@
+# Coverage for `make test-cov` / CI. gh-wait runs as a subprocess in its tests,
+# so coverage patches subprocess startup to measure it too.
+[run]
+source =
+    bin
+    lib
+patch = subprocess
+parallel = true
+
+[report]
+skip_empty = true
+# Gate = floor(acceptance line coverage) - 5; measured 65% on 2026-10-07.
+fail_under = 60

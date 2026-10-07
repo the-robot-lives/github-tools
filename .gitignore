@@ -8,6 +8,10 @@ __pycache__/
 *.pyc
 *.pyo
 docs/_build/
+.coverage
+.coverage.*
+coverage.xml
+.pytest_cache/
 
 # Canonical worktree placement
 .claude/worktrees/

@@ -1,0 +1,4 @@
+# Test-only deps (CI + `make test-cov`). coverage>=7.10 for `patch = subprocess`.
+pytest>=8,<10
+pytest-cov>=6,<8
+coverage>=7.10,<8

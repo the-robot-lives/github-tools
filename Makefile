@@ -1,7 +1,7 @@
 INSTALL_DIR ?= $(HOME)/.local/bin
 LIB_INSTALL_DIR ?= $(HOME)/.local/share/github-utils
 
-.PHONY: compile build test install install-gh-wait clean docs
+.PHONY: compile build test test-cov install install-gh-wait clean docs
 
 compile:
 	@python3 -m py_compile lib/submodule_status.py
@@ -17,9 +17,12 @@ test: compile
 	@python3 tests/test_submodule_status.py
 	@python3 tests/test_gh_wait.py
 
+test-cov: compile
+	@python3 -m pytest tests -q --cov --cov-report=term
+
 install: compile
 	@mkdir -p $(INSTALL_DIR)
-	@for f in bin/submodule-* bin/gh-wait; do \
+	@for f in bin/submodule-* bin/gh-wait bin/agh; do \
 		install -m 755 "$$f" "$(INSTALL_DIR)/$$(basename $$f)"; \
 		echo "✓ Installed $$(basename $$f)"; \
 	done
@@ -32,6 +35,11 @@ install-gh-wait:
 	@install -m 755 bin/gh-wait "$(INSTALL_DIR)/gh-wait"
 	@echo "✓ Installed gh-wait"
 
+install-agh:
+	@mkdir -p $(INSTALL_DIR)
+	@install -m 755 bin/agh "$(INSTALL_DIR)/agh"
+	@echo "✓ Installed agh"
+
 docs:
 	@python3 -m pip install -q -r docs/requirements.txt
 	@python3 -m sphinx -b html docs docs/_build/html
@@ -40,4 +48,4 @@ docs:
 clean:
 	@find . -name '*.pyc' -delete
 	@find . -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-	@rm -rf docs/_build
+	@rm -rf docs/_build .coverage .coverage.* coverage.xml
