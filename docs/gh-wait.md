@@ -10,8 +10,8 @@ loops with a single command, covered by a single permission allowlist rule.
 |---|---|
 | 0 | Condition met: success |
 | 1 | Condition met, but the result is a failure: CI failed, PR closed unmerged, robot review failed, rollout deadline exceeded |
-| 2 | Timeout (`--timeout`, default 30m) |
-| 3 | Usage or tool error: bad args, `gh`/`kubectl` missing, auth, not found — after `--max-errors` consecutive failures, or when the timeout expires while the last call errored |
+| 2 | Timeout (`--timeout`, default 30m); with `--snapshot`: not settled yet (`result=pending`) |
+| 3 | Usage or tool error: bad args, `gh`/`kubectl` missing, auth, not found — after `--max-errors` consecutive failures, or when the timeout expires while the last call errored; with `--snapshot`: on the first tool error, immediately |
 
 ## Output
 
@@ -31,6 +31,33 @@ changes. `--quiet` turns them off. Anything token-shaped is redacted.
 | `--quiet` | off | no progress on stderr |
 | `--json` | off | JSON result |
 | `--max-errors` | `3` | consecutive gh/kubectl errors tolerated (transient 5xx, network) |
+| `--snapshot` | off | check once, report the current state, never poll (see below) |
+
+## `--snapshot`: non-blocking checks
+
+`--snapshot` turns any waiting subcommand into a one-shot peek: it calls the
+underlying `gh`/`kubectl` exactly once, prints the current state in the normal
+output format, and exits without sleeping or retrying.
+
+- Terminal states behave exactly as in poll mode: exit 0 (success) or 1
+  (failure), with the same summary line and details.
+- A not-yet-settled state (checks pending, run in progress, PR still open)
+  prints `result=pending` and exits **2** — distinguishable from a poll-mode
+  timeout only by the `result` field.
+- Tool errors surface immediately as exit 3: one attempt, no `--max-errors`
+  retries.
+- `--interval`, `--timeout`, and `--max-errors` are ignored.
+
+Intended for agents that must not block a foreground thread: fire a snapshot
+check when a background Monitor or a scheduled wake-up reports the target may
+have settled, and let the exit code drive the next step. (`--timeout 0` also
+checks once, but reports `result=timeout` and still retries errors — prefer
+`--snapshot` for peeking.)
+
+```bash
+gh-wait pr-checks 48 --snapshot --json    # {"result": "pending", "exit": 2, ...}
+gh-wait run --branch main --latest --snapshot
+```
 
 ## Subcommands
 

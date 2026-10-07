@@ -187,6 +187,58 @@ class PrChecksTests(GhWaitCase):
         self.assertEqual(r.returncode, 0)
 
 
+# ----------------------------------------------------------------------------- --snapshot
+
+class SnapshotTests(GhWaitCase):
+    """--snapshot: one check, one report, never poll — for non-blocking agents."""
+
+    def test_pending_reports_once_and_exits_2(self):
+        pending = [chk("test", "IN_PROGRESS", "pending"), chk("lint", "SUCCESS", "pass")]
+        # Second response would flip it to done; snapshot must never fetch it.
+        done = [chk("test", "SUCCESS", "pass"), chk("lint", "SUCCESS", "pass")]
+        scen = {"gh": [{"match": ["pr", "checks"], "responses": [resp(pending, 8), resp(done)]}]}
+        r = self.run_cli(scen, "pr-checks", "48", "--snapshot", "--quiet")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("result=pending", r.stdout)
+        self.assertEqual(len(self.calls()), 1)  # exactly one look, no poll
+
+    def test_terminal_success_without_polling(self):
+        done = [chk("test", "SUCCESS", "pass")]
+        scen = {"gh": [{"match": ["pr", "checks"], "responses": [resp(done)]}]}
+        r = self.run_cli(scen, "pr-checks", "48", "--snapshot", "--quiet")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("result=success", r.stdout)
+
+    def test_terminal_failure_exit_1(self):
+        failed = [chk("test", "FAILURE", "fail")]
+        scen = {"gh": [{"match": ["pr", "checks"], "responses": [resp(failed, 1)]}]}
+        r = self.run_cli(scen, "pr-checks", "48", "--snapshot", "--quiet")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("result=failure", r.stdout)
+
+    def test_pr_state_pending_open_pr(self):
+        scen = {"gh": [{"match": ["pr", "view"], "responses": [resp(pr(7, "OPEN"))]}]}
+        r = self.run_cli(scen, "pr-state", "7", "--snapshot", "--quiet")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("result=pending", r.stdout)
+
+    def test_tool_error_exits_3_after_one_call(self):
+        # --max-errors would tolerate 3 in poll mode; snapshot never retries.
+        scen = {"gh": [{"match": ["pr", "checks"], "responses": [resp("", 1, "boom")]}]}
+        r = self.run_cli(scen, "pr-checks", "48", "--snapshot", "--max-errors", "3", "--quiet")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_json_payload_shape(self):
+        pending = [chk("test", "IN_PROGRESS", "pending")]
+        scen = {"gh": [{"match": ["pr", "checks"], "responses": [resp(pending, 8)]}]}
+        r = self.run_cli(scen, "pr-checks", "48", "--snapshot", "--json", "--quiet")
+        self.assertEqual(r.returncode, 2)
+        payload = json.loads(r.stdout)
+        self.assertEqual(payload["exit"], 2)
+        self.assertEqual(payload["result"], "pending")
+
+
 # ----------------------------------------------------------------------------- pr-state
 
 def pr(number, state, oid=None):
