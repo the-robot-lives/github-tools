@@ -1,7 +1,7 @@
 INSTALL_DIR ?= $(HOME)/.local/bin
 LIB_INSTALL_DIR ?= $(HOME)/.local/share/github-utils
 
-.PHONY: compile build test install install-gh-wait clean docs
+.PHONY: compile build test test-cov install install-gh-wait clean docs
 
 compile:
 	@python3 -m py_compile lib/submodule_status.py
@@ -16,6 +16,9 @@ test: compile
 	@bash -n bin/submodule-status && echo "✓ bin/submodule-status"
 	@python3 tests/test_submodule_status.py
 	@python3 tests/test_gh_wait.py
+
+test-cov: compile
+	@python3 -m pytest tests -q --cov --cov-report=term
 
 install: compile
 	@mkdir -p $(INSTALL_DIR)
@@ -40,4 +43,4 @@ docs:
 clean:
 	@find . -name '*.pyc' -delete
 	@find . -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-	@rm -rf docs/_build
+	@rm -rf docs/_build .coverage .coverage.* coverage.xml
