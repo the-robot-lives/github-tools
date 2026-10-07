@@ -6,9 +6,10 @@
 #         agh --help
 #
 # Credentials (env / direnv — never committed). Defaults shown are for the
-# noizu-agentic-coder app (app 5220485, personal-account installation).
+# noizu-agentic-coder app (app 5220485, the-robot-lives org installation).
 #   AGH_APP_ID           GitHub App numeric id (default 5220485)
-#   AGH_INSTALLATION_ID  installation id (default 168768280). "auto" or unset
+#   AGH_INSTALLATION_ID  installation id (default 168768636 = the-robot-lives
+#                        org; 168768280 = personal @noizu). "auto" or unset
 #                        default resolves via GET /app/installations; use "auto"
 #                        explicitly to require exactly one installation.
 #   AGH_PRIVATE_KEY_PATH app's PEM private key (default
@@ -24,7 +25,7 @@ VERSION="0.2.0"
 
 # Defaults for the noizu-agentic-coder GitHub App (override via env).
 : "${AGH_APP_ID:=5220485}"
-: "${AGH_INSTALLATION_ID:=168768280}"
+: "${AGH_INSTALLATION_ID:=168768636}"
 : "${AGH_PRIVATE_KEY_PATH:=$HOME/Work/Space/Noizu/secrets/noizu-agentic-coder.private-key.pem}"
 
 die() { echo "agh: $*" >&2; exit 3; }

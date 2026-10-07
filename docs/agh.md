@@ -23,7 +23,7 @@ Defaults target the noizu-agentic-coder GitHub App; override via env/direnv
 | Variable | Default | |
 |---|---|---|
 | `AGH_APP_ID` | `5220485` | GitHub App numeric id |
-| `AGH_INSTALLATION_ID` | `168768280` | installation id; `auto` → resolved via `GET /app/installations`, failing unless exactly one exists. Set explicitly once the app has several. |
+| `AGH_INSTALLATION_ID` | `168768636` (the-robot-lives org; `168768280` = personal @noizu) | installation id; `auto` → resolved via `GET /app/installations`, failing unless exactly one exists. |
 | `AGH_PRIVATE_KEY_PATH` | `~/Work/Space/Noizu/secrets/noizu-agentic-coder.private-key.pem` | app's `.pem` private key (chmod 600) |
 
 Example `.envrc` fragment (values via dc/Infisical, not literals):
