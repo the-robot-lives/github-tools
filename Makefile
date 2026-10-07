@@ -22,7 +22,7 @@ test-cov: compile
 
 install: compile
 	@mkdir -p $(INSTALL_DIR)
-	@for f in bin/submodule-* bin/gh-wait; do \
+	@for f in bin/submodule-* bin/gh-wait bin/agh; do \
 		install -m 755 "$$f" "$(INSTALL_DIR)/$$(basename $$f)"; \
 		echo "✓ Installed $$(basename $$f)"; \
 	done
@@ -34,6 +34,11 @@ install-gh-wait:
 	@mkdir -p $(INSTALL_DIR)
 	@install -m 755 bin/gh-wait "$(INSTALL_DIR)/gh-wait"
 	@echo "✓ Installed gh-wait"
+
+install-agh:
+	@mkdir -p $(INSTALL_DIR)
+	@install -m 755 bin/agh "$(INSTALL_DIR)/agh"
+	@echo "✓ Installed agh"
 
 docs:
 	@python3 -m pip install -q -r docs/requirements.txt
