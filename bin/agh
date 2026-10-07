@@ -8,10 +8,11 @@
 # Credentials (env / direnv — never committed). Defaults shown are for the
 # noizu-agentic-coder app (app 5220485, the-robot-lives org installation).
 #   AGH_APP_ID           GitHub App numeric id (default 5220485)
-#   AGH_INSTALLATION_ID  installation id (default 168768636 = the-robot-lives
-#                        org; 168768280 = personal @noizu). "auto" or unset
-#                        default resolves via GET /app/installations; use "auto"
-#                        explicitly to require exactly one installation.
+#   AGH_INSTALLATION_ID  installation id. Unset or "auto" (the default)
+#                        resolves the installation whose account matches the
+#                        target repo's owner — from -R/--repo, GH_REPO, or the
+#                        cwd's origin remote — via GET /app/installations.
+#                        A number pins that installation explicitly.
 #   AGH_PRIVATE_KEY_PATH app's PEM private key (default
 #                        ~/Work/Space/Noizu/secrets/noizu-agentic-coder.private-key.pem)
 #
@@ -21,16 +22,15 @@
 set -euo pipefail
 
 API="https://api.github.com"
-VERSION="0.2.0"
+VERSION="0.3.0"
 
 # Defaults for the noizu-agentic-coder GitHub App (override via env).
 : "${AGH_APP_ID:=5220485}"
-: "${AGH_INSTALLATION_ID:=168768636}"
 : "${AGH_PRIVATE_KEY_PATH:=$HOME/Work/Space/Noizu/secrets/noizu-agentic-coder.private-key.pem}"
 
 die() { echo "agh: $*" >&2; exit 3; }
 
-[[ ${1:-} == "--help" || ${1:-} == "-h" ]] && sed -n '2,15p' "$0" && exit 0
+[[ ${1:-} == "--help" || ${1:-} == "-h" ]] && sed -n '2,/ Dependencies/p' "$0" | sed '$d' && exit 0
 [[ ${1:-} == "--version" ]] && echo "agh $VERSION" && exit 0
 
 PRINT_TOKEN=0
@@ -70,11 +70,63 @@ gh_api() {  # method path [jq-filter] -> body; concise errors, no secrets
     jq -r "$filter" <<<"$body"
 }
 
-# --- installation token -----------------------------------------------------
+# --- installation selection ---------------------------------------------------
+# Target repo owner: gh's -R/--repo (space- or =-joined), GH_REPO, else the
+# cwd's origin remote. Only GitHub remotes count; anything else yields "".
+repo_owner() {
+    local i=$# v
+    while ((i > 0)); do
+        v=${!i}
+        if [[ $v == -R || $v == --repo ]] && ((i < $#)); then
+            local n=$((i + 1)); v=${!n}
+        elif [[ $v == -R=* || $v == --repo=* ]]; then
+            v=${v#*=}
+        else
+            i=$((i - 1)); continue
+        fi
+        [[ $v == */* ]] && { printf '%s' "${v%%/*}"; return; }
+        i=$((i - 1))
+    done
+    [[ ${GH_REPO:-} == */* ]] && { printf '%s' "${GH_REPO%%/*}"; return; }
+    local url
+    url=$(git remote get-url origin 2>/dev/null) || return 0
+    [[ $url == *github.com* ]] || return 0
+    printf '%s' "$url" \
+        | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#^git@[^:]*:##; s#^github\.com[:/]##; s#\.git$##; s#/.*##'
+}
+
 inst=${AGH_INSTALLATION_ID:-auto}
+if [[ $inst != auto && ! $inst =~ ^[0-9]+$ ]]; then
+    die "AGH_INSTALLATION_ID must be a number or \"auto\" (got: $inst)"
+fi
 if [[ $inst == auto ]]; then
-    inst=$(gh_api GET /app/installations '.[0].id // empty')
-    [[ -n $inst ]] || die "no installation found for app $AGH_APP_ID (install the app on at least one org/repo)"
+    owner=$(repo_owner "$@")
+    # GET /app/installations caps at 100 per page; accumulate pages until a
+    # short page (or a 50-page safety cap) so owners beyond the first 100 hit.
+    installations='[]'
+    page=1
+    while ((page <= 50)); do
+        body=$(gh_api GET "/app/installations?per_page=100&page=$page" '.')
+        installations=$(jq -s '.[0] + .[1]' <<<"$installations"$'\n'"$body")
+        (( $(jq 'length' <<<"$body") < 100 )) && break
+        page=$((page + 1))
+    done
+    [[ $installations != '[]' ]] \
+        || die "no installation found for app $AGH_APP_ID (install the app on at least one org/repo)"
+    if [[ -n $owner ]]; then
+        # One installation per account per app; suspended installs are skipped.
+        inst=$(jq -r --arg o "$owner" '
+            .[] | select(.suspended_at == null)
+                | select(((.account.login // "") | ascii_downcase) == ($o | ascii_downcase))
+                | .id' <<<"$installations" | head -n1)
+        if [[ -z $inst ]]; then
+            logins=$(jq -r '.[].account.login // "?"' <<<"$installations" | paste -sd, -)
+            die "app $AGH_APP_ID is not installed on \"$owner\" (installed on: $logins)"
+        fi
+    else
+        # No repo context to key off: keep the historical first-install default.
+        inst=$(jq -r '.[0].id' <<<"$installations")
+    fi
 fi
 token=$(gh_api POST "/app/installations/$inst/access_tokens" '.token // empty')
 [[ -n $token ]] || die "could not obtain installation token"
