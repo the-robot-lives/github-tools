@@ -28,7 +28,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -212,6 +212,8 @@ class Done:
 
 
 def poll(opts, check) -> Done:
+    if getattr(opts, "snapshot", False):
+        return snapshot(opts, check)
     deadline = time.monotonic() + opts.timeout
     errors = 0
     last_msg = None
@@ -244,6 +246,26 @@ def poll(opts, check) -> Done:
                 fields["last"] = last_msg
             return Done(EXIT_TIMEOUT, fields)
         time.sleep(max(0.0, min(opts.interval, remaining)))
+
+
+def snapshot(opts, check) -> Done:
+    """One-shot variant of poll() for --snapshot: check the current state,
+    report it, never sleep or retry. Terminal states return their normal
+    Done (exit 0/1); a not-yet-settled state returns exit 2 with
+    result=pending so a caller can distinguish "still running" from
+    "timed out waiting". Tool errors surface immediately as exit 3."""
+    try:
+        res = check()
+    except (FatalError, ToolError):
+        raise  # one attempt, no retries — snapshot is a peek, not a wait
+    if isinstance(res, Done):
+        return res
+    if isinstance(res, Pending):
+        fields = {"result": "pending", **res.fields}
+        if res.msg:
+            fields["last"] = res.msg
+        return Done(EXIT_TIMEOUT, fields)
+    return Done(EXIT_TIMEOUT, {"result": "pending"})
 
 
 # --------------------------------------------------------------------------- pr-review
@@ -528,12 +550,16 @@ def _pod_ready(pod: dict) -> bool:
                for c in (pod.get("status") or {}).get("conditions") or [])
 
 
-def _pod_images(pod: dict, container: str | None) -> list[str]:
+def _pod_containers(pod: dict) -> list[tuple[str, str]]:
     statuses = (pod.get("status") or {}).get("containerStatuses") or []
-    images = [(c.get("name"), c.get("image") or "") for c in statuses]
-    if not images:
-        images = [(c.get("name"), c.get("image") or "") for c in (pod.get("spec") or {}).get("containers") or []]
-    return [img for name, img in images if container is None or name == container]
+    rows = [(c.get("name"), c.get("image") or "") for c in statuses]
+    if not rows:
+        rows = [(c.get("name"), c.get("image") or "") for c in (pod.get("spec") or {}).get("containers") or []]
+    return rows
+
+
+def _pod_images(pod: dict, container: str | None) -> list[str]:
+    return [img for name, img in _pod_containers(pod) if container is None or name == container]
 
 
 def kubectl(opts, *args: str) -> list[str]:
@@ -565,51 +591,62 @@ def _find_deployments(opts) -> list[dict]:
     raise ToolError(f"no deployment named or labelled {target} in namespace {ns}")
 
 
+def _rollout_status(opts, deps: list[dict], token: str, container: str | None) -> dict:
+    """Rollout and pod-image check shared by deploy and release. 'failed' names a deployment
+    that hit ProgressDeadlineExceeded; it is checked before that deployment's pods are listed."""
+    out = {"ready": 0, "want": 0, "image": None, "lines": [], "waiting": [], "containers": [], "failed": None}
+    seen: dict[tuple, dict] = {}
+    for dep in deps:
+        name = dep.get("metadata", {}).get("name")
+        spec = dep.get("spec") or {}
+        st = dep.get("status") or {}
+        want = spec.get("replicas", 1)
+        for cond in st.get("conditions") or []:
+            if cond.get("type") == "Progressing" and cond.get("reason") == "ProgressDeadlineExceeded":
+                out["failed"] = name
+                return out
+        rolled = (st.get("observedGeneration", 0) >= dep.get("metadata", {}).get("generation", 0)
+                  and st.get("updatedReplicas", 0) == want
+                  and st.get("availableReplicas", 0) == want
+                  and st.get("replicas", 0) == want)
+        labels = (spec.get("selector") or {}).get("matchLabels") or {}
+        sel = ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
+        pods = (run_json(kubectl(opts, "get", "pods", "-n", opts.namespace, "-l", sel, "-o", "json"))
+                or {}).get("items") or []
+        ready = [p for p in pods if _pod_ready(p)]
+        matching = 0
+        for p in ready:
+            hit = [i for i in _pod_images(p, container) if token in _image_tag(i).lower()]
+            if hit:
+                matching += 1
+                out["image"] = out["image"] or hit[0]
+            for cname, img in _pod_containers(p):
+                key = (f"{name}/{cname}", img)
+                if key not in seen:
+                    seen[key] = {"container": key[0], "image": img, "match": token in _image_tag(img).lower()}
+        stale = len(ready) - matching
+        out["ready"] += matching
+        out["want"] += want
+        out["lines"].append(f"{name}: ready={matching}/{want} stale_ready={stale} rollout={'complete' if rolled else 'in_progress'}")
+        if not rolled or stale or matching < want:
+            out["waiting"].append(f"{name} ready={matching}/{want} stale={stale} rollout={'complete' if rolled else 'in_progress'}")
+    out["containers"] = list(seen.values())
+    return out
+
+
 def cmd_deploy(opts) -> int:
     token = sha_token(opts.sha)
     if len(token) < 4:
         raise UsageError("--sha must be at least 4 hex characters")
 
     def check():
-        deps = _find_deployments(opts)
-        total_ready = total_want = 0
-        image = None
-        lines: list[str] = []
-        waiting: list[str] = []
-        for dep in deps:
-            name = dep.get("metadata", {}).get("name")
-            spec = dep.get("spec") or {}
-            st = dep.get("status") or {}
-            want = spec.get("replicas", 1)
-            for cond in st.get("conditions") or []:
-                if cond.get("type") == "Progressing" and cond.get("reason") == "ProgressDeadlineExceeded":
-                    return Done(EXIT_FAIL, {"result": "failure", "reason": "ProgressDeadlineExceeded",
-                                            "deployment": name, "namespace": opts.namespace})
-            rolled = (st.get("observedGeneration", 0) >= dep.get("metadata", {}).get("generation", 0)
-                      and st.get("updatedReplicas", 0) == want
-                      and st.get("availableReplicas", 0) == want
-                      and st.get("replicas", 0) == want)
-            labels = (spec.get("selector") or {}).get("matchLabels") or {}
-            sel = ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
-            pods = (run_json(kubectl(opts, "get", "pods", "-n", opts.namespace, "-l", sel, "-o", "json"))
-                    or {}).get("items") or []
-            ready = [p for p in pods if _pod_ready(p)]
-            matching = 0
-            for p in ready:
-                imgs = _pod_images(p, opts.container)
-                hit = [i for i in imgs if token in _image_tag(i).lower()]
-                if hit:
-                    matching += 1
-                    image = image or hit[0]
-            stale = len(ready) - matching
-            total_ready += matching
-            total_want += want
-            lines.append(f"{name}: ready={matching}/{want} stale_ready={stale} rollout={'complete' if rolled else 'in_progress'}")
-            if not rolled or stale or matching < want:
-                waiting.append(f"{name} ready={matching}/{want} stale={stale} rollout={'complete' if rolled else 'in_progress'}")
+        st = _rollout_status(opts, _find_deployments(opts), token, opts.container)
+        if st["failed"]:
+            return Done(EXIT_FAIL, {"result": "failure", "reason": "ProgressDeadlineExceeded",
+                                    "deployment": st["failed"], "namespace": opts.namespace})
         fields = {"namespace": opts.namespace, "target": opts.target, "sha": token,
-                  "image": image, "ready": f"{total_ready}/{total_want}"}
-        argo = {}
+                  "image": st["image"], "ready": f"{st['ready']}/{st['want']}"}
+        waiting = list(st["waiting"])
         if opts.argocd:
             app = run_json(kubectl(opts, "get", "applications.argoproj.io", opts.argocd,
                                    "-n", opts.argocd_namespace, "-o", "json")) or {}
@@ -621,9 +658,212 @@ def cmd_deploy(opts) -> int:
                 waiting.append(f"argocd {opts.argocd} {argo['argocd_sync']}/{argo['argocd_health']}")
         if waiting:
             return Pending("; ".join(waiting), fields)
-        return Done(EXIT_OK, {"result": "success", **fields}, lines)
+        return Done(EXIT_OK, {"result": "success", **fields}, st["lines"])
 
     return finish(opts, "deploy", poll(opts, check))
+
+
+# --------------------------------------------------------------------------- release
+
+_RELEASE_GATES = ("merge", "build", "sync", "rollout")
+_BUILD, _SYNC = _RELEASE_GATES.index("build"), _RELEASE_GATES.index("sync")
+_CI_FAILED = ("failure", "cancelled", "startup_failure", "timed_out")
+_PR_RX = re.compile(r"^\d+$")
+_SHA_RX = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_CANDIDATE_CAP = 40
+
+
+def _gh_api(path: str):
+    return run_json(["gh", "api", path])
+
+
+def _repo_slug(state: dict) -> str:
+    if not state["repo_slug"]:
+        data = run_json(["gh", "repo", "view", "--json", "nameWithOwner"]) or {}
+        if not data.get("nameWithOwner"):
+            raise FatalError("could not infer owner/repo; pass -R owner/repo")
+        state["repo_slug"] = data["nameWithOwner"]
+    return state["repo_slug"]
+
+
+def _norm_repo(url: str) -> str:
+    """git@github.com:owner/repo.git and https://github.com/owner/repo -> owner/repo."""
+    u = url.strip().lower().rstrip("/")
+    if u.endswith(".git"):
+        u = u[:-4]
+    parts = [p for p in u.replace(":", "/").split("/") if p]
+    return "/".join(parts[-2:])
+
+
+def _app_repo_urls(app: dict) -> list[str]:
+    spec = app.get("spec") or {}
+    urls = [(spec.get("source") or {}).get("repoURL")]
+    urls += [(src or {}).get("repoURL") for src in spec.get("sources") or []]
+    return [u for u in urls if u]
+
+
+def _app_name(app: dict) -> str:
+    return (app.get("metadata") or {}).get("name") or ""
+
+
+def _resolve_app(opts, state: dict) -> None:
+    """Find the ArgoCD Application and its destination namespace for the repo. Memoized."""
+    if state["app"]:
+        return
+    if opts.app:
+        app = run_json(kubectl(opts, "get", "applications.argoproj.io", opts.app,
+                               "-n", opts.argocd_namespace, "-o", "json")) or {}
+        if not _app_name(app):
+            raise FatalError(f"Application {opts.app} not found in {opts.argocd_namespace}")
+        matches = [app]
+    else:
+        slug = _repo_slug(state)
+        items = (run_json(kubectl(opts, "get", "applications.argoproj.io",
+                                  "-n", opts.argocd_namespace, "-o", "json")) or {}).get("items") or []
+        matches = [a for a in items if any(_norm_repo(u) == slug.lower() for u in _app_repo_urls(a))]
+        if not matches:
+            cands = ", ".join(f"{_app_name(a)}={' '.join(_app_repo_urls(a))}" for a in items[:_CANDIDATE_CAP])
+            raise FatalError(f"no Application in {opts.argocd_namespace} points at {slug}; "
+                             f"candidates: {cands or 'none'}")
+        if len(matches) > 1:
+            names = ", ".join(_app_name(a) for a in matches)
+            raise FatalError(f"{len(matches)} Applications point at {slug} ({names}); pass --app NAME")
+    app = matches[0]
+    dest_ns = ((app.get("spec") or {}).get("destination") or {}).get("namespace")
+    if not dest_ns:
+        raise FatalError(f"Application {_app_name(app)} has no destination.namespace")
+    state["app"], state["ns"] = _app_name(app), dest_ns
+
+
+def _app_object(opts, state: dict) -> dict:
+    return run_json(kubectl(opts, "get", "applications.argoproj.io", state["app"],
+                            "-n", opts.argocd_namespace, "-o", "json")) or {}
+
+
+def _release_base(state: dict, gate: str) -> dict:
+    token = sha_token(state["merge_sha"]) if state["merge_sha"] else None
+    return {"gate": gate, "repo": state["repo_slug"], "pr": state["pr"], "merge_sha": state["merge_sha"],
+            "sha": token, "bump_sha": state["bump_sha"], "app": state["app"], "namespace": state["ns"]}
+
+
+def _release_merge(opts, state: dict):
+    """Resolve the merge sha. This is a fact, so it always runs. Returns a stop result or None."""
+    if state["merge_sha"]:
+        return None
+    slug = _repo_slug(state)
+    if state["pr"] is None:
+        data = _gh_api(f"repos/{slug}/commits/{state['ref']}") or {}
+        if not data.get("sha"):
+            raise ToolError(f"commit {state['ref']} not found in {slug}")
+        state["merge_sha"] = data["sha"].lower()
+        return None
+    pr = run_json(gh(opts, "pr", "view", str(state["pr"]), "--json", _PR_FIELDS)) or {}
+    st = (pr.get("state") or "").upper()
+    if st == "CLOSED":
+        return Done(EXIT_FAIL, {"result": "closed_unmerged", **_release_base(state, "merge")})
+    if st != "MERGED":
+        return Pending(f"gate=merge pr={state['pr']} state={st.lower()} waiting for merge",
+                       _release_base(state, "merge"))
+    state["merge_sha"] = ((pr.get("mergeCommit") or {}).get("oid") or "").lower()
+    if not state["merge_sha"]:
+        raise ToolError(f"PR {state['pr']} is merged but gh reports no merge commit yet")
+    return None
+
+
+def cmd_release(opts) -> int:
+    ref = opts.ref.strip()
+    is_pr = _PR_RX.match(ref) is not None
+    if not is_pr and _SHA_RX.match(ref) is None:
+        raise UsageError("release needs a PR number or a 7-40 hex merge sha")
+    entry = _RELEASE_GATES.index(opts.from_gate)
+    state = {"ref": ref.lower(), "sha_input": not is_pr, "pr": int(ref) if is_pr else None,
+             "repo_slug": opts.repo, "merge_sha": None, "on_main": None, "ci_green": False,
+             "bump_sha": None, "app": None, "ns": None, "warned_auto": False}
+
+    def check():
+        stop = _release_merge(opts, state)
+        if stop:
+            return stop
+        slug = state["repo_slug"]
+        token = sha_token(state["merge_sha"])
+        if state["sha_input"] and state["on_main"] is None:
+            data = _gh_api(f"repos/{slug}/compare/main...{state['merge_sha']}") or {}
+            if data.get("status") not in ("behind", "identical"):
+                return Done(EXIT_FAIL, {"result": "not_on_main", **_release_base(state, "build")})
+            state["on_main"] = True
+
+        if entry <= _BUILD and not state["ci_green"]:
+            runs = (_gh_api(f"repos/{slug}/actions/runs?head_sha={state['merge_sha']}&per_page=20")
+                    or {}).get("workflow_runs") or []
+            bad = [r for r in runs if r.get("conclusion") in _CI_FAILED]
+            if bad:
+                jobs = (_gh_api(f"repos/{slug}/actions/runs/{bad[0].get('id')}/jobs?per_page=50")
+                        or {}).get("jobs") or []
+                lines = [f"job {j.get('name')}={j.get('conclusion')}" for j in jobs
+                         if j.get("conclusion") == "failure"]
+                return Done(EXIT_FAIL, {"result": "ci_failure", "run": bad[0].get("name"),
+                                        "conclusion": bad[0].get("conclusion"),
+                                        **_release_base(state, "build")}, lines)
+            if not runs:
+                return Pending(f"gate=build no CI run for {token} yet", _release_base(state, "build"))
+            busy = [r for r in runs if r.get("status") != "completed"]
+            if busy:
+                return Pending(f"gate=build ci={busy[0].get('name')}:{busy[0].get('status')}",
+                               _release_base(state, "build"))
+            state["ci_green"] = True
+
+        if state["bump_sha"] is None:
+            needle = f"sha-{token}"
+            commits = _gh_api(f"repos/{slug}/commits?sha=main&per_page=100") or []
+            hit = next((c for c in commits
+                        if needle in ((c.get("commit") or {}).get("message") or "").lower()), None)
+            if hit is None:
+                return Pending(f"gate=build bump=missing (looking for '{needle}' on main)",
+                               _release_base(state, "build"))
+            state["bump_sha"] = hit["sha"].lower()
+
+        _resolve_app(opts, state)
+        app_obj = _app_object(opts, state)
+        status = app_obj.get("status") or {}
+        sync = (status.get("sync") or {}).get("status")
+        health = (status.get("health") or {}).get("status")
+        revision = (status.get("sync") or {}).get("revision")
+        argo = {"argocd_sync": sync, "argocd_health": health, "sync_revision": revision}
+        if not state["warned_auto"] and not ((app_obj.get("spec") or {}).get("syncPolicy") or {}).get("automated"):
+            state["warned_auto"] = True
+            progress(opts, f"warning: {state['app']} has no automated syncPolicy; it will not sync on its own")
+        at_bump = revision == state["bump_sha"]
+        if entry <= _SYNC:
+            if at_bump and health == "Degraded":
+                return Done(EXIT_FAIL, {"result": "degraded", **_release_base(state, "sync"), **argo})
+            if not (at_bump and sync == "Synced" and health == "Healthy"):
+                return Pending(f"gate=sync argocd {sync}/{health} revision={'bump' if at_bump else 'stale'}",
+                               {**_release_base(state, "sync"), **argo})
+
+        opts.namespace = state["ns"]
+        if opts.target:
+            deps = _find_deployments(opts)
+        else:
+            deps = (run_json(kubectl(opts, "get", "deployments", "-n", state["ns"], "-l",
+                                     f"argocd.argoproj.io/instance={state['app']}", "-o", "json"))
+                    or {}).get("items") or []
+        base = {**_release_base(state, "rollout"), **argo}
+        if not deps:
+            return Pending(f"gate=rollout no deployments labelled argocd.argoproj.io/instance={state['app']} yet",
+                           base)
+        st = _rollout_status(opts, deps, token, opts.container)
+        if st["failed"]:
+            return Done(EXIT_FAIL, {"result": "failure", "reason": "ProgressDeadlineExceeded",
+                                    "deployment": st["failed"], **base})
+        base["ready"] = f"{st['ready']}/{st['want']}"
+        base["image"] = st["image"]
+        if st["waiting"]:
+            return Pending("gate=rollout " + "; ".join(st["waiting"]), base)
+        lines = st["lines"] + [f"{c['container']}: {c['image']} match={'yes' if c['match'] else 'no'}"
+                               for c in st["containers"]]
+        return Done(EXIT_OK, {"result": "success", **base}, lines, {"containers": st["containers"]})
+
+    return finish(opts, "release", poll(opts, check))
 
 
 # --------------------------------------------------------------------------- status
@@ -698,7 +938,8 @@ class Parser(argparse.ArgumentParser):
         sys.exit(EXIT_ERROR)
 
 
-EPILOG = "exit codes: 0 met/success, 1 met-but-failed, 2 timeout, 3 usage/tool error"
+EPILOG = ("exit codes: 0 met/success, 1 met-but-failed, 2 timeout (or pending with --snapshot), "
+          "3 usage/tool error")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -712,6 +953,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--json", action="store_true", help="print the result as one JSON object")
     g.add_argument("--max-errors", type=int, default=3,
                    help="consecutive gh/kubectl errors tolerated before exit 3 (default 3)")
+    g.add_argument("--snapshot", action="store_true",
+                   help="check once and report the current state instead of polling: "
+                        "terminal states exit 0/1 as usual, not-yet-settled exits 2 with "
+                        "result=pending. For non-blocking agents; pair with Monitor-based "
+                        "watches rather than a blocking foreground wait")
 
     p = Parser(prog="gh-wait", description=__doc__.split("\n\n")[0], epilog=EPILOG,
                formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -784,6 +1030,27 @@ def build_parser() -> argparse.ArgumentParser:
                    help="namespace of ArgoCD Applications (default infra, the noizu cluster)")
     s.set_defaults(func=cmd_deploy)
 
+    s = add("release", "track a release: merge -> CI bump commit -> ArgoCD sync -> rollout",
+            "Walk one release through its gates for a PR number or a merge-commit sha. Facts (merge sha, "
+            "bump commit, ArgoCD app) always resolve; --from only skips waiting on the earlier gates. "
+            "The ArgoCD Application is found by matching the repo URL in --argocd-namespace (or --app). "
+            "Read-only: never triggers a sync. Exit 1 on CI failure, closed PR, degraded app or "
+            "ProgressDeadlineExceeded.")
+    s.add_argument("ref", metavar="<pr|sha>",
+                   help="PR number, or 7-40 hex merge-commit sha (a sha skips the merge wait)")
+    s.add_argument("--from", dest="from_gate", choices=_RELEASE_GATES, default="merge",
+                   help="skip verification of earlier gates (default merge)")
+    s.add_argument("--app", metavar="NAME", help="ArgoCD Application name (default: match the repo URL)")
+    s.add_argument("--target", metavar="NAME",
+                   help="find deployments by name/label instead of argocd.argoproj.io/instance=<app>")
+    s.add_argument("--container", help="only check this container's image (default: any container)")
+    s.add_argument("--context", default="noizu", help="kube context (default noizu; '' = current)")
+    s.add_argument("--kubeconfig", default=None,
+                   help="kubeconfig path (default ~/.kube/noizu/config if present)")
+    s.add_argument("--argocd-namespace", default="infra",
+                   help="namespace of ArgoCD Applications (default infra, the noizu cluster)")
+    s.set_defaults(func=cmd_release)
+
     s = add("status", "one-shot PR summary (state, checks, latest bot review, mergeability)")
     s.add_argument("pr")
     s.add_argument("--bot", default="robot", help="author login regex (default: robot)")
@@ -798,7 +1065,7 @@ def main(argv: list[str] | None = None) -> int:
     if not getattr(opts, "func", None):
         parser.print_help(sys.stderr)
         return EXIT_ERROR
-    if getattr(opts, "cmd", None) == "deploy" and opts.kubeconfig is None:
+    if getattr(opts, "cmd", None) in ("deploy", "release") and opts.kubeconfig is None:
         default_kc = os.path.expanduser("~/.kube/noizu/config")
         opts.kubeconfig = default_kc if os.path.exists(default_kc) else None
     elif getattr(opts, "kubeconfig", None):
