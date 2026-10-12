@@ -119,7 +119,9 @@ Tracks one release through every gate, in one command, instead of chaining
    the release sha. A sha input skips the wait. It must be on `main`, or the
    command exits 1 with `not_on_main`.
 2. **build**: every CI run for that sha must complete green. A failed or
-   cancelled run exits 1 at once and names the failing jobs. Then a commit on
+   cancelled run exits 1 at once and names the failing jobs. Any failed run at the sha counts,
+   including an unrelated workflow. The release branch is `main`, hardcoded: a repo whose
+   release branch differs will time out at this gate. Then a commit on
    `main` among its newest 500 commits (five pages of 100) must carry `sha-<7>` in its message. That is the product's bump-chart
    commit (`ci: deploy sha-<7> [skip ci]`). Until it lands, the gate waits.
 3. **sync**: the ArgoCD Application must be `Synced` and `Healthy` at the bump

@@ -607,6 +607,21 @@ class ReleaseTests(GhWaitCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(["gh", "api", COMMITS_P2], self.calls())
 
+    def test_null_commits_response_is_a_tool_error(self):
+        r = self.run_cli(release_scenario(commits=("null",)), "release", MERGE, "-R", SLUG,
+                         "--max-errors", "1", "--quiet")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+
+    def test_bump_scan_stops_at_cap_and_says_so(self):
+        filler = [{"sha": "2" * 40, "commit": {"message": "chore: filler"}}] * 100
+        scen = release_scenario(commits=(filler,), commits_p2=(filler,))
+        scen["gh"] += [{"match": [f"repos/{SLUG}/commits?sha=main&per_page=100&page={p}"],
+                        "responses": [resp(filler)]} for p in range(3, 6)]
+        r = self.run_cli(scen, "release", MERGE, "-R", SLUG, *FAST)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("scan capped at newest 500 commits", r.stdout)
+        self.assertFalse(any("page=6" in " ".join(c) for c in self.calls()))
+
     def test_bad_ref_is_usage_error(self):
         r = self.run_cli({}, "release", "zz-top")
         self.assertEqual(r.returncode, 3)
