@@ -437,7 +437,8 @@ SLUG = "o/r"
 MERGE = "aaabbbcccdddeee0001112223334445556667778"  # token aaabbbc
 BUMP = "fff1110000000000000000000000000000000000"
 RUNS = f"repos/{SLUG}/actions/runs?head_sha={MERGE}&per_page=20"
-COMMITS = f"repos/{SLUG}/commits?sha=main&per_page=100"
+COMMITS = f"repos/{SLUG}/commits?sha=main&per_page=100&page=1"
+COMMITS_P2 = f"repos/{SLUG}/commits?sha=main&per_page=100&page=2"
 COMPARE = f"repos/{SLUG}/compare/main...{MERGE}"
 COMMIT = f"repos/{SLUG}/commits/{MERGE}"
 JOBS = f"repos/{SLUG}/actions/runs/101/jobs?per_page=50"
@@ -470,13 +471,14 @@ def argo_app(name="web", repo=f"git@github.com:{SLUG}.git", ns="apps", sync="Syn
 
 def release_scenario(pr=(merged_pr(),), runs=(runs_payload(),), commits=(commits_payload(),),
                      apps=(argo_app(),), apps_list=None, app="web", pods=None, deps=None,
-                     compare=None, jobs=None):
+                     compare=None, jobs=None, commits_p2=None):
     pods = pods or ({"items": [pod("o/web:sha-aaabbbc"), pod("o/web:sha-aaabbbc", name="web-2")]},)
     deps = deps or ({"items": [deployment()]},)
     gh_rules = [
         {"match": ["pr", "view"], "responses": [resp(x) for x in pr]},
         {"match": [RUNS], "responses": [resp(x) for x in runs]},
         {"match": [COMMITS], "responses": [resp(x) for x in commits]},
+        {"match": [COMMITS_P2], "responses": [resp(x) for x in commits_p2 or []]},
         {"match": [COMPARE], "responses": [resp(compare or {"status": "behind"})]},
         {"match": [COMMIT], "responses": [resp({"sha": MERGE})]},
         {"match": [JOBS], "responses": [resp(jobs or {"jobs": []})]},
@@ -597,6 +599,13 @@ class ReleaseTests(GhWaitCase):
                          "--app", "ghost", "--quiet")
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
         self.assertIn("Application ghost not found", r.stdout)
+
+    def test_bump_found_on_second_page(self):
+        filler = [{"sha": "2" * 40, "commit": {"message": "chore: filler"}}] * 100
+        scen = release_scenario(commits=(filler,), commits_p2=(commits_payload(),))
+        r = self.run_cli(scen, "release", MERGE, "-R", SLUG, "--quiet")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(["gh", "api", COMMITS_P2], self.calls())
 
     def test_bad_ref_is_usage_error(self):
         r = self.run_cli({}, "release", "zz-top")
