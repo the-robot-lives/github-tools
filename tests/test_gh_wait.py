@@ -431,6 +431,199 @@ class DeployTests(GhWaitCase):
         self.assertEqual(r.returncode, 3)  # timeout while erroring reports the error
 
 
+# ----------------------------------------------------------------------------- release
+
+SLUG = "o/r"
+MERGE = "aaabbbcccdddeee0001112223334445556667778"  # token aaabbbc
+BUMP = "fff1110000000000000000000000000000000000"
+RUNS = f"repos/{SLUG}/actions/runs?head_sha={MERGE}&per_page=20"
+COMMITS = f"repos/{SLUG}/commits?sha=main&per_page=30"
+COMPARE = f"repos/{SLUG}/compare/main...{MERGE}"
+COMMIT = f"repos/{SLUG}/commits/{MERGE}"
+JOBS = f"repos/{SLUG}/actions/runs/101/jobs?per_page=50"
+
+
+def merged_pr(number=48, oid=MERGE, state="MERGED"):
+    return {"number": number, "state": state, "mergeCommit": {"oid": oid} if state == "MERGED" else None,
+            "mergedAt": None, "url": "https://x/48", "headRefName": "f"}
+
+
+def runs_payload(status="completed", conclusion="success", name="ci"):
+    return {"workflow_runs": [{"id": 101, "name": name, "status": status, "conclusion": conclusion}]}
+
+
+def commits_payload(with_bump=True):
+    commits = [{"sha": "1" * 40, "commit": {"message": "feat: something"}}]
+    if with_bump:
+        commits.insert(0, {"sha": BUMP, "commit": {"message": "ci: deploy sha-aaabbbc [skip ci]"}})
+    return commits
+
+
+def argo_app(name="web", repo=f"git@github.com:{SLUG}.git", ns="apps", sync="Synced", health="Healthy",
+             rev=BUMP, automated=True):
+    spec = {"source": {"repoURL": repo}, "destination": {"namespace": ns}}
+    if automated:
+        spec["syncPolicy"] = {"automated": {"prune": True}}
+    return {"metadata": {"name": name}, "spec": spec,
+            "status": {"sync": {"status": sync, "revision": rev}, "health": {"status": health}}}
+
+
+def release_scenario(pr=(merged_pr(),), runs=(runs_payload(),), commits=(commits_payload(),),
+                     apps=(argo_app(),), apps_list=None, app="web", pods=None, deps=None,
+                     compare=None, jobs=None):
+    pods = pods or ({"items": [pod("o/web:sha-aaabbbc"), pod("o/web:sha-aaabbbc", name="web-2")]},)
+    deps = deps or ({"items": [deployment()]},)
+    gh_rules = [
+        {"match": ["pr", "view"], "responses": [resp(x) for x in pr]},
+        {"match": [RUNS], "responses": [resp(x) for x in runs]},
+        {"match": [COMMITS], "responses": [resp(x) for x in commits]},
+        {"match": [COMPARE], "responses": [resp(compare or {"status": "behind"})]},
+        {"match": [COMMIT], "responses": [resp({"sha": MERGE})]},
+        {"match": [JOBS], "responses": [resp(jobs or {"jobs": []})]},
+    ]
+    kube_rules = [
+        {"match": ["applications.argoproj.io", app], "responses": [resp(a) for a in apps]},
+        {"match": ["applications.argoproj.io"], "responses": [resp({"items": apps_list or [apps[0]]})]},
+        {"match": [f"argocd.argoproj.io/instance={app}"], "responses": [resp(d) for d in deps]},
+        {"match": ["get", "pods"], "responses": [resp(p) for p in pods]},
+    ]
+    return {"gh": gh_rules, "kubectl": kube_rules}
+
+
+class ReleaseTests(GhWaitCase):
+    def calls_to(self, tool, *needle):
+        return [c for c in self.calls() if c[0] == tool and all(n in c for n in needle)]
+
+    def test_full_path_from_pr_multi_poll(self):
+        scen = release_scenario(
+            pr=(merged_pr(state="OPEN"), merged_pr()),
+            runs=(runs_payload("in_progress", ""), runs_payload()),
+            commits=(commits_payload(False), commits_payload()),
+            apps=(argo_app(rev="1" * 40), argo_app()))
+        r = self.run_cli(scen, "release", "48", "-R", SLUG, "--interval", "0", "--timeout", "10s", "--quiet")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("gate=rollout", r.stdout)
+        self.assertIn("ready=2/2", r.stdout)
+        self.assertIn("argocd_sync=Synced", r.stdout)
+        self.assertIn(["gh", "api", RUNS], self.calls())
+        self.assertTrue(self.calls_to("kubectl", "argocd.argoproj.io/instance=web"))
+
+    def test_sha_fast_path_single_poll(self):
+        r = self.run_cli(release_scenario(), "release", MERGE, "-R", SLUG, "--interval", "0", "--quiet")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(len([c for c in self.calls() if c[:3] == ["gh", "api", COMPARE]]), 1)
+        self.assertFalse(any(c[:2] == ["gh", "pr"] for c in self.calls()))
+
+    def test_from_rollout_skips_run_query(self):
+        r = self.run_cli(release_scenario(), "release", MERGE, "-R", SLUG, "--from", "rollout", "--quiet")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn(["gh", "api", RUNS], self.calls())
+
+    def test_from_rollout_before_bump_times_out_at_build(self):
+        r = self.run_cli(release_scenario(commits=(commits_payload(False),)),
+                         "release", MERGE, "-R", SLUG, "--from", "rollout", *FAST)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("gate=build", r.stdout)
+        self.assertIn("sha-aaabbbc", r.stdout)
+
+    def test_snapshot_stops_at_sync(self):
+        scen = release_scenario(apps=(argo_app(rev="1" * 40),))
+        r = self.run_cli(scen, "release", "48", "-R", SLUG, "--snapshot", "--json", "--quiet")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual((out["result"], out["gate"], out["argocd_sync"]), ("pending", "sync", "Synced"))
+        named = [c for c in self.calls() if c[0] == "kubectl" and "web" in c and "applications.argoproj.io" in c]
+        self.assertEqual(len(named), 1)
+
+    def test_snapshot_stops_at_build(self):
+        r = self.run_cli(release_scenario(commits=(commits_payload(False),)),
+                         "release", "48", "-R", SLUG, "--snapshot", "--json", "--quiet")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout)["gate"], "build")
+
+    def test_ci_failure_names_the_job(self):
+        scen = release_scenario(runs=(runs_payload(conclusion="failure"),),
+                                jobs={"jobs": [{"name": "build-push", "conclusion": "failure"}]})
+        r = self.run_cli(scen, "release", MERGE, "-R", SLUG, "--quiet")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("ci_failure", r.stdout)
+        self.assertIn("build-push", r.stdout)
+
+    def test_not_on_main_stops_before_commit_scan(self):
+        r = self.run_cli(release_scenario(compare={"status": "ahead"}), "release", MERGE, "-R", SLUG, "--quiet")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not_on_main", r.stdout)
+        self.assertNotIn(["gh", "api", COMMITS], self.calls())
+
+    def test_degraded_at_bump_revision_exits_1(self):
+        r = self.run_cli(release_scenario(apps=(argo_app(health="Degraded"),)),
+                         "release", MERGE, "-R", SLUG, "--quiet")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("degraded", r.stdout)
+
+    def test_degraded_at_stale_revision_keeps_waiting(self):
+        r = self.run_cli(release_scenario(apps=(argo_app(rev="1" * 40, health="Degraded"),)),
+                         "release", MERGE, "-R", SLUG, *FAST)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("argocd_health=Degraded", r.stdout)
+        self.assertIn("gate=sync", r.stdout)
+
+    def test_no_matching_app_lists_candidates(self):
+        other = argo_app(name="x", repo="git@github.com:other/x.git")
+        r = self.run_cli(release_scenario(apps_list=[other]), "release", MERGE, "-R", SLUG, "--quiet")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("x=git@github.com:other/x.git", r.stdout)
+
+    def test_two_apps_need_app_flag(self):
+        apps = [argo_app(name="web"), argo_app(name="web2")]
+        r = self.run_cli(release_scenario(apps_list=apps), "release", MERGE, "-R", SLUG, "--quiet")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("pass --app", r.stdout)
+        scen = release_scenario(app="web2", apps=(argo_app(name="web2"),))
+        (self.dir / "calls.log").unlink(missing_ok=True)
+        r = self.run_cli(scen, "release", MERGE, "-R", SLUG, "--app", "web2", "--quiet")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        listing = [c for c in self.calls() if c[0] == "kubectl" and "applications.argoproj.io" in c
+                   and "web2" not in c]
+        self.assertEqual(listing, [])
+
+    def test_closed_unmerged_pr_exits_1(self):
+        r = self.run_cli(release_scenario(pr=(merged_pr(state="CLOSED"),)), "release", "48", "-R", SLUG, "--quiet")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("closed_unmerged", r.stdout)
+
+    def test_bad_ref_is_usage_error(self):
+        r = self.run_cli({}, "release", "zz-top")
+        self.assertEqual(r.returncode, 3)
+
+    def test_empty_deployments_wait_at_rollout(self):
+        r = self.run_cli(release_scenario(deps=({"items": []},)), "release", MERGE, "-R", SLUG, *FAST)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("gate=rollout", r.stdout)
+
+    def test_per_container_map_and_container_filter(self):
+        r = self.run_cli(release_scenario(), "release", MERGE, "-R", SLUG, "--quiet")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("web/app: o/web:sha-aaabbbc match=yes", r.stdout)
+        self.assertIn("web/proxy: envoy:1.30 match=no", r.stdout)
+        stale = {"items": [pod("o/web:sha-0000000")]}
+        r = self.run_cli(release_scenario(pods=(stale,)), "release", MERGE, "-R", SLUG, "--container", "app", *FAST)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    def test_automated_sync_warning_once(self):
+        scen = release_scenario(apps=(argo_app(rev="1" * 40, automated=False),))
+        r = self.run_cli(scen, "release", MERGE, "-R", SLUG, "--interval", "0", "--timeout", "0.3s")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(r.stderr.count("no automated syncPolicy"), 1)
+
+    def test_transient_error_recovers_and_memoizes_pr(self):
+        scen = release_scenario()
+        scen["gh"][2]["responses"] = [resp("", 1, "HTTP 502 Bad Gateway"), resp(commits_payload())]
+        r = self.run_cli(scen, "release", "48", "-R", SLUG, "--interval", "0", "--timeout", "10s", "--quiet")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(len([c for c in self.calls() if "pr" in c]), 1)
+
+
 # ----------------------------------------------------------------------------- status / misc
 
 class StatusTests(GhWaitCase):
@@ -465,7 +658,7 @@ class StatusTests(GhWaitCase):
         self.assertIn("not found on PATH", r.stdout)
 
     def test_help_for_every_subcommand(self):
-        for cmd in ("pr-review", "pr-checks", "pr-state", "run", "deploy", "status"):
+        for cmd in ("pr-review", "pr-checks", "pr-state", "run", "deploy", "release", "status"):
             r = self.run_cli({}, cmd, "--help")
             self.assertEqual(r.returncode, 0, cmd)
             self.assertIn("exit codes", r.stdout)
