@@ -9,9 +9,9 @@ loops with a single command, covered by a single permission allowlist rule.
 | Code | Meaning |
 |---|---|
 | 0 | Condition met: success |
-| 1 | Condition met, but the result is a failure: CI failed, PR closed unmerged, robot review failed, rollout deadline exceeded |
-| 2 | Timeout (`--timeout`, default 30m) |
-| 3 | Usage or tool error: bad args, `gh`/`kubectl` missing, auth, not found — after `--max-errors` consecutive failures, or when the timeout expires while the last call errored |
+| 1 | Condition met, but the result is a failure: CI failed, PR closed unmerged, robot review failed, rollout deadline exceeded, release CI failed / app degraded / sha not on main |
+| 2 | Timeout (`--timeout`, default 30m); with `--snapshot`: not settled yet (`result=pending`) |
+| 3 | Usage or tool error: bad args, `gh`/`kubectl` missing, auth, not found — after `--max-errors` consecutive failures, or when the timeout expires while the last call errored; with `--snapshot`: on the first tool error, immediately |
 
 ## Output
 
@@ -31,6 +31,33 @@ changes. `--quiet` turns them off. Anything token-shaped is redacted.
 | `--quiet` | off | no progress on stderr |
 | `--json` | off | JSON result |
 | `--max-errors` | `3` | consecutive gh/kubectl errors tolerated (transient 5xx, network) |
+| `--snapshot` | off | check once, report the current state, never poll (see below) |
+
+## `--snapshot`: non-blocking checks
+
+`--snapshot` turns any waiting subcommand into a one-shot peek: it calls the
+underlying `gh`/`kubectl` exactly once, prints the current state in the normal
+output format, and exits without sleeping or retrying.
+
+- Terminal states behave exactly as in poll mode: exit 0 (success) or 1
+  (failure), with the same summary line and details.
+- A not-yet-settled state (checks pending, run in progress, PR still open)
+  prints `result=pending` and exits **2** — distinguishable from a poll-mode
+  timeout only by the `result` field.
+- Tool errors surface immediately as exit 3: one attempt, no `--max-errors`
+  retries.
+- `--interval`, `--timeout`, and `--max-errors` are ignored.
+
+Intended for agents that must not block a foreground thread: fire a snapshot
+check when a background Monitor or a scheduled wake-up reports the target may
+have settled, and let the exit code drive the next step. (`--timeout 0` also
+checks once, but reports `result=timeout` and still retries errors — prefer
+`--snapshot` for peeking.)
+
+```bash
+gh-wait pr-checks 48 --snapshot --json    # {"result": "pending", "exit": 2, ...}
+gh-wait run --branch main --latest --snapshot
+```
 
 ## Subcommands
 
@@ -83,6 +110,51 @@ be `Synced` + `Healthy`. Kube defaults: `--context noizu`, and
 `--kubeconfig ~/.kube/noizu/config` when that file exists.
 `ProgressDeadlineExceeded` exits 1.
 
+### `release <pr|sha> [--from merge|build|sync|rollout] [--app NAME] [--target NAME]`
+
+Tracks one release through every gate, in one command, instead of chaining
+`run`, `deploy`, and ArgoCD checks by hand:
+
+1. **merge**: a PR number waits until it is merged, and its merge commit becomes
+   the release sha. A sha input skips the wait. It must be on `main`, or the
+   command exits 1 with `not_on_main`.
+2. **build**: every CI run for that sha must complete green. A failed or
+   cancelled run exits 1 at once and names the failing jobs. Then a commit on
+   `main` among its newest 100 commits must carry `sha-<7>` in its message. That is the product's bump-chart
+   commit (`ci: deploy sha-<7> [skip ci]`). Until it lands, the gate waits.
+3. **sync**: the ArgoCD Application must be `Synced` and `Healthy` at the bump
+   commit's revision. Checking the revision, not just the status, proves this
+   is the new sync and not a stale one. `Degraded` at that revision exits 1.
+   A missing `automated` syncPolicy prints one warning, because nothing will
+   sync on its own.
+4. **rollout**: every Deployment labelled `argocd.argoproj.io/instance=<app>`
+   in the app's destination namespace must be complete, with all pods ready and
+   running an image tagged with the release sha. Detail lines show each
+   container's image and whether it matches.
+
+**App resolution.** The Application is found live: `kubectl get
+applications.argoproj.io` in `--argocd-namespace` (default `infra`), matched on
+the repo URL (`git@…:owner/repo.git` and `https://…/owner/repo` both count;
+`-R` or the current remote supplies the slug). Zero matches exits 3 and lists
+every `name=repoURL` candidate. This is how a repo mismatch shows up, such as
+a product whose deployed app lives in a `*-site` repo. More than one match
+also exits 3, and the message asks for `--app NAME`. Use `--app` to name the
+Application directly. Manual fallbacks, if the cluster lookup is not enough:
+`.infra-config.yaml` (monorepo) or `argocd/apps/*.yaml`, read with `yq` to find
+the name. The tool itself does not read either file.
+
+**`--from`** skips *waiting* on the gates before it. It never skips fact
+resolution: the merge sha, bump commit, and ArgoCD app always resolve, because
+the later gates depend on them. A PR input still waits for its merge, because
+that is the only source of its sha. `--target NAME` swaps the instance-label
+lookup for the `deploy`-style name/label lookup.
+
+Fields: `gate` (the gate that is pending, or the one that stopped), `repo`,
+`pr`, `merge_sha`, `sha` (7 chars), `bump_sha`, `app`, `namespace`, `ready`,
+`image`, `argocd_sync`, `argocd_health`, `sync_revision`. A pending result
+carries `gate=`, so a caller can resume with `--from <gate>`.
+Read-only: `release` never triggers an ArgoCD sync.
+
 ### `status <pr>`
 
 Reads the PR once, without waiting: state, draft, mergeable/merge state, review
@@ -105,5 +177,11 @@ gh-wait run --branch develop --workflow ci.yml --latest --rerun-cancelled
 gh-wait pr-checks 48 --ignore 'the robot watches'
 gh-wait pr-state --head feature/x --until merged
 gh-wait deploy apps-ns therobotlearns --sha "$(git rev-parse HEAD)" --argocd therobotlearns
+# Track a release from its merged PR through CI, ArgoCD sync, and rollout
+gh-wait release 48 -R the-robot-lives/therobotlearns.com
+# Resume from the rollout gate, e.g. after a sync was confirmed by hand
+gh-wait release 48 --from rollout --app therobotlearns
+# Non-blocking: one check now; pair with Monitor for the waiting loop
+gh-wait release "$(git rev-parse HEAD)" --snapshot --json
 gh-wait status 48 -R the-robot-lives/therobotlearns.com --json
 ```
