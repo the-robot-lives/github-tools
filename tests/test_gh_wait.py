@@ -437,7 +437,7 @@ SLUG = "o/r"
 MERGE = "aaabbbcccdddeee0001112223334445556667778"  # token aaabbbc
 BUMP = "fff1110000000000000000000000000000000000"
 RUNS = f"repos/{SLUG}/actions/runs?head_sha={MERGE}&per_page=20"
-COMMITS = f"repos/{SLUG}/commits?sha=main&per_page=30"
+COMMITS = f"repos/{SLUG}/commits?sha=main&per_page=100"
 COMPARE = f"repos/{SLUG}/compare/main...{MERGE}"
 COMMIT = f"repos/{SLUG}/commits/{MERGE}"
 JOBS = f"repos/{SLUG}/actions/runs/101/jobs?per_page=50"
@@ -591,6 +591,12 @@ class ReleaseTests(GhWaitCase):
         r = self.run_cli(release_scenario(pr=(merged_pr(state="CLOSED"),)), "release", "48", "-R", SLUG, "--quiet")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("closed_unmerged", r.stdout)
+
+    def test_unknown_app_flag_is_clear_not_found(self):
+        r = self.run_cli(release_scenario(app="ghost", apps=({},)), "release", MERGE, "-R", SLUG,
+                         "--app", "ghost", "--quiet")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("Application ghost not found", r.stdout)
 
     def test_bad_ref_is_usage_error(self):
         r = self.run_cli({}, "release", "zz-top")

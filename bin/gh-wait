@@ -711,8 +711,11 @@ def _resolve_app(opts, state: dict) -> None:
     if state["app"]:
         return
     if opts.app:
-        matches = [run_json(kubectl(opts, "get", "applications.argoproj.io", opts.app,
-                                    "-n", opts.argocd_namespace, "-o", "json")) or {}]
+        app = run_json(kubectl(opts, "get", "applications.argoproj.io", opts.app,
+                               "-n", opts.argocd_namespace, "-o", "json")) or {}
+        if not _app_name(app):
+            raise FatalError(f"Application {opts.app} not found in {opts.argocd_namespace}")
+        matches = [app]
     else:
         slug = _repo_slug(state)
         items = (run_json(kubectl(opts, "get", "applications.argoproj.io",
@@ -811,7 +814,7 @@ def cmd_release(opts) -> int:
 
         if state["bump_sha"] is None:
             needle = f"sha-{token}"
-            commits = _gh_api(f"repos/{slug}/commits?sha=main&per_page=30") or []
+            commits = _gh_api(f"repos/{slug}/commits?sha=main&per_page=100") or []
             hit = next((c for c in commits
                         if needle in ((c.get("commit") or {}).get("message") or "").lower()), None)
             if hit is None:
