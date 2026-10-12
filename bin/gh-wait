@@ -817,13 +817,17 @@ def cmd_release(opts) -> int:
             needle = f"sha-{token}"
             hit = None
             for page in range(1, _BUMP_MAX_PAGES + 1):
-                commits = _gh_api(f"repos/{slug}/commits?sha=main&per_page={_BUMP_PAGE}&page={page}") or []
+                commits = _gh_api(f"repos/{slug}/commits?sha=main&per_page={_BUMP_PAGE}&page={page}")
+                if not isinstance(commits, list):
+                    raise ToolError(f"commits API returned no list for page {page} of {slug}")
                 hit = next((c for c in commits
                             if needle in ((c.get("commit") or {}).get("message") or "").lower()), None)
                 if hit or len(commits) < _BUMP_PAGE:
                     break
             if hit is None:
-                return Pending(f"gate=build bump=missing (looking for '{needle}' on main)",
+                capped = len(commits) == _BUMP_PAGE  # every page full: the window ran out, not the history
+                cap_note = f"; scan capped at newest {_BUMP_PAGE * _BUMP_MAX_PAGES} commits" if capped else ""
+                return Pending(f"gate=build bump=missing (looking for '{needle}' on main{cap_note})",
                                _release_base(state, "build"))
             state["bump_sha"] = hit["sha"].lower()
 
