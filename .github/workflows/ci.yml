@@ -85,7 +85,10 @@ jobs:
           steps_sum=0
           while IFS=$'\t' read -r job step start end; do
             [ -n "$job" ] || continue
-            s=$(date -d "$start" +%s); e=$(date -d "$end" +%s)
+            s=$(date -d "$start" +%s 2>/dev/null) && e=$(date -d "$end" +%s 2>/dev/null) || {
+              echo "::warning title=CI timing::skipped unparseable step record ($job / $step)"
+              continue
+            }
             dur=$((e - s)); thr=$((STEP_MAX_MIN * 60))
             steps_sum=$((steps_sum + dur))
             if [ "$dur" -gt "$thr" ]; then
@@ -99,7 +102,9 @@ jobs:
             .jobs[] | select(.name | test("^test$")) | .name as $job |
             .steps[] | select(.status == "completed" and .conclusion != "skipped" and .conclusion != null) |
             [$job, .name, .started_at, .completed_at] | @tsv')
-          start=$(date -d "$RUN_STARTED_AT" +%s); now=$(date +%s)
+          start=$(date -d "$RUN_STARTED_AT" +%s 2>/dev/null) || {
+            echo "::warning title=CI timing::could not parse run start time"; exit 0; }
+          now=$(date +%s)
           wall=$((now - start)); run_thr=$((RUN_MAX_MIN * 60))
           echo
           echo "| **steps sum** | test jobs, work only | $((steps_sum / 60))m$((steps_sum % 60))s | $( [ "$steps_sum" -gt "$run_thr" ] && echo "⚠️ over ${RUN_MAX_MIN}m" || echo ok) |" >> "$SUMMARY"
