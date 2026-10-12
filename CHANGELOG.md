@@ -1,7 +1,7 @@
 # Changelog — utilities/shell/github-utils
 
 ## [Unreleased]
-- Added `gh-wait release <pr|sha>` — tracks a release through merge → CI bump commit → ArgoCD sync (at the bump revision) → rollout, with the ArgoCD Application found live by repo URL (`--app` to pin). `--from` skips waiting on earlier gates, never fact resolution. Read-only. `deploy`'s rollout check moved into a shared helper (no behaviour change). Version 0.2.0.
+- Added `gh-wait release <pr|sha>` — tracks a release through merge → CI bump commit → ArgoCD sync (at the bump revision) → rollout, with the ArgoCD Application found live by repo URL (`--app` to pin). `--from` skips waiting on earlier gates, never fact resolution. Read-only. `deploy`'s rollout check moved into a shared helper (no behaviour change). Version 0.2.0. PR #18 → develop; fixes #19 → develop; → stage (#20) → main (#22, 28216c8).
 - Added `gh-wait` — one-prefix poller for PR reviews (`pr-review`), checks (`pr-checks`), PR state (`pr-state`), Actions runs (`run`, incl. `cancelled_no_steps` + `--rerun-cancelled`), k8s rollouts to a sha (`deploy`, optional ArgoCD gate) and a one-shot `status`. Deterministic exits 0/1/2/3, key=value or `--json` output. Python 3 stdlib; wraps read-only `gh`/`kubectl`. `make install` installs it; `make install-gh-wait` installs only it.
 - Marketing / about page + Read the Docs Sphinx tree (`.readthedocs.yaml`, `docs/conf.py`, Nocturne theme overlay). Positioning in `marketing/`.
 - Terraform provider lives in its own public repo: [the-robot-lives/terraform-provider-readthedocs](https://github.com/the-robot-lives/terraform-provider-readthedocs).
