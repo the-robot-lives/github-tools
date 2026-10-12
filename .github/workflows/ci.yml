@@ -102,14 +102,18 @@ jobs:
             .jobs[] | select(.name | test("^test$")) | .name as $job |
             .steps[] | select(.status == "completed" and .conclusion != "skipped" and .conclusion != null) |
             [$job, .name, .started_at, .completed_at] | @tsv')
-          start=$(date -d "$RUN_STARTED_AT" +%s 2>/dev/null) || {
-            echo "::warning title=CI timing::could not parse run start time"; exit 0; }
-          now=$(date +%s)
-          wall=$((now - start)); run_thr=$((RUN_MAX_MIN * 60))
+          run_thr=$((RUN_MAX_MIN * 60))
+          if start=$(date -d "$RUN_STARTED_AT" +%s 2>/dev/null); then
+            wall=$(( $(date +%s) - start ))
+            wall_cell="$((wall / 60))m$((wall % 60))s"
+          else
+            echo "::warning title=CI timing::could not parse run start time; wall clock unavailable"
+            wall_cell="unavailable"
+          fi
           echo
           echo "| **steps sum** | test jobs, work only | $((steps_sum / 60))m$((steps_sum % 60))s | $( [ "$steps_sum" -gt "$run_thr" ] && echo "⚠️ over ${RUN_MAX_MIN}m" || echo ok) |" >> "$SUMMARY"
-          echo "| **wall clock** | queue + work | $((wall / 60))m$((wall % 60))s | info |" >> "$SUMMARY"
+          echo "| **wall clock** | queue + work | $wall_cell | info |" >> "$SUMMARY"
           if [ "$steps_sum" -gt "$run_thr" ]; then
-            echo "::warning title=CI timing::acceptance steps sum to $((steps_sum / 60))m$((steps_sum % 60))s — over the ${RUN_MAX_MIN}m run threshold (wall clock: $((wall / 60))m)"
+            echo "::warning title=CI timing::acceptance steps sum to $((steps_sum / 60))m$((steps_sum % 60))s — over the ${RUN_MAX_MIN}m run threshold (wall clock: $wall_cell)"
           fi
           echo; echo "_${flagged} step(s) over threshold._" >> "$SUMMARY"
