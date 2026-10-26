@@ -1,3 +1,4 @@
+<!-- 〚📁:77fb9f7d-9784-5104-8f7c-f7ec3a0eb497〛 PROJ-SCHEMA :: Data and config artifact reference: cache files, snapshot JSON, env vars. -->
 # Project Schema — Data & Config Artifacts
 
 > **No persistence layer.** github-utils is a CLI tool package (bash + Python).

@@ -1,3 +1,4 @@
+<!-- 〚📁:881fbf17-8d23-5269-892f-67e4ae6c1c08〛 PROJ-ARCH :: Architecture overview of the github-utils CLI package: components, execution flows, key decisions. -->
 # Project Architecture — github-utils
 
 ## Overview

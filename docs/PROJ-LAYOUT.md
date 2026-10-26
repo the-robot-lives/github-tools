@@ -1,3 +1,4 @@
+<!-- 〚📁:363cb3cd-ed5f-56c2-96e5-87181a6f2e40〛 PROJ-LAYOUT :: Navigable map of the repository tree and key files. -->
 # Project Layout
 
 Terminal utility package: interactive git-submodule workflow tools installed to

@@ -1,3 +1,4 @@
+<!-- 〚📁:1a5059cd-5c4b-57e7-aa25-60a3674f8687〛 submodule-commit reference :: Reference for the bulk commit/push tool with deepest-first nested-ref bubbling. -->
 # submodule-commit
 
 Interactive bulk commit/push for dirty git submodules. Recursively scans

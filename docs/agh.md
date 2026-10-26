@@ -1,3 +1,4 @@
+<!-- 〚📁:af2f8a19-47a0-505b-bf6b-4a0c77e1ebd5〛 agh reference :: Reference for the agh GitHub App auth wrapper: JWT exchange, installation selection, credential env vars. -->
 # agh
 
 Run `gh` authenticated as a GitHub App installation instead of your user

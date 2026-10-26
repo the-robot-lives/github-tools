@@ -1,0 +1,110 @@
+---
+pointers:
+  1a5059cd-5c4b-57e7-aa25-60a3674f8687:
+    created_at: 2026-10-26T21:57:19.671298Z
+    description: Reference for the bulk commit/push tool with deepest-first nested-ref bubbling.
+    file_path: docs/submodule-commit.md
+    function: submodule-commit reference
+    kind: file
+    line: 1
+    locations:
+      - file_path: docs/submodule-commit.md
+        line: 1
+    token: 𓰜𓽑𓆣𓹇
+    updated_at: 2026-10-26T21:57:19.671298Z
+  363cb3cd-ed5f-56c2-96e5-87181a6f2e40:
+    created_at: 2026-10-26T21:57:19.671315Z
+    description: Navigable map of the repository tree and key files.
+    file_path: docs/PROJ-LAYOUT.md
+    function: PROJ-LAYOUT
+    kind: file
+    line: 1
+    locations:
+      - file_path: docs/PROJ-LAYOUT.md
+        line: 1
+    token: 𔒑𓖴𓝮𓴰
+    updated_at: 2026-10-26T21:57:19.671315Z
+  4e213f81-d93b-540c-ad8e-d1d1b1aa7ccf:
+    created_at: 2026-10-26T21:57:19.671312Z
+    description: 'Entry point: purpose, prerequisites, install, and usage for the submodule-status / submodule-commit / gh-wait CLI suite.'
+    file_path: README.md
+    function: github-tools README
+    kind: file
+    line: 1
+    locations:
+      - file_path: README.md
+        line: 1
+    token: 𔍛𓧈𓞨𔉟
+    updated_at: 2026-10-26T21:57:19.671312Z
+  60faf7a2-adaa-5a59-a1ff-db5d4ee84bfe:
+    created_at: 2026-10-26T21:57:19.671305Z
+    description: Reference for the read-only submodule dashboard (fzf TUI, HTML, table, JSON).
+    file_path: docs/submodule-status.md
+    function: submodule-status reference
+    kind: file
+    line: 1
+    locations:
+      - file_path: docs/submodule-status.md
+        line: 1
+    token: 𔃏𓀖𓧆𓈾
+    updated_at: 2026-10-26T21:57:19.671305Z
+  7546cd48-e742-5358-bb47-d5ebc480239d:
+    created_at: 2026-10-26T21:57:19.671302Z
+    description: GitHub Actions test + coverage gate and PR timing tracker for the github-tools suite.
+    file_path: .github/workflows/ci.yml
+    function: CI workflow
+    kind: file
+    line: 1
+    locations:
+      - file_path: .github/workflows/ci.yml
+        line: 1
+    token: 𓿝𓪇𔍲𓗍
+    updated_at: 2026-10-26T21:57:19.671302Z
+  77fb9f7d-9784-5104-8f7c-f7ec3a0eb497:
+    created_at: 2026-10-26T21:57:19.671323Z
+    description: 'Data and config artifact reference: cache files, snapshot JSON, env vars.'
+    file_path: docs/PROJ-SCHEMA.md
+    function: PROJ-SCHEMA
+    kind: file
+    line: 1
+    locations:
+      - file_path: docs/PROJ-SCHEMA.md
+        line: 1
+    token: 𔗯𔄛𓘀𔂧
+    updated_at: 2026-10-26T21:57:19.671323Z
+  881fbf17-8d23-5269-892f-67e4ae6c1c08:
+    created_at: 2026-10-26T21:57:19.671273Z
+    description: 'Architecture overview of the github-utils CLI package: components, execution flows, key decisions.'
+    file_path: docs/PROJ-ARCH.md
+    function: PROJ-ARCH
+    kind: file
+    line: 1
+    locations:
+      - file_path: docs/PROJ-ARCH.md
+        line: 1
+    token: 𓑵𔒫𓾌𔋘
+    updated_at: 2026-10-26T21:57:19.671273Z
+  89ee5a52-fbad-5943-8f63-2e0acbb9c987:
+    created_at: 2026-10-26T21:57:19.671308Z
+    description: 'Full reference for the gh-wait poller: subcommands, exit codes, output format, and snapshot mode.'
+    file_path: docs/gh-wait.md
+    function: gh-wait reference
+    kind: file
+    line: 1
+    locations:
+      - file_path: docs/gh-wait.md
+        line: 1
+    token: 𔃛𓮈𓼕𓄷
+    updated_at: 2026-10-26T21:57:19.671308Z
+  af2f8a19-47a0-505b-bf6b-4a0c77e1ebd5:
+    created_at: 2026-10-26T21:57:19.671289Z
+    description: 'Reference for the agh GitHub App auth wrapper: JWT exchange, installation selection, credential env vars.'
+    file_path: docs/agh.md
+    function: agh reference
+    kind: file
+    line: 1
+    locations:
+      - file_path: docs/agh.md
+        line: 1
+    token: 𓩊𔗊𓭐𓗥
+    updated_at: 2026-10-26T21:57:19.671289Z
