@@ -11,6 +11,8 @@
 | `gh/<owner>__<repo>.json` | `~/.cache/submodule-status/` (XDG-aware) | `{nwo, fetched_at, schema:1, prs_raw[], runs_raw[], errors[]}` — TTL 90 s |
 | `snapshot.json` | `~/.cache/submodule-status/` (or `--dump`) | `{version, generated_at, root, github_enabled, github_note, 7 rollup counts, modules[]}` — also `--json` stdout |
 | `dashboard.html` | `~/.cache/submodule-status/` | Rendered HTML (`--web`) |
+| gh-wait output | stdout only (stateless) | key=value summary line or `--json` `{result, exit, …}`; exits 0/1/2/3; tokens redacted; nothing persisted |
+| agh token | child process env only | ~1 h installation token; never written to disk; `--print-token` = opt-in echo |
 
 `modules[]`: path/branch/head/dirty counts + worktrees[], branches[], local_only[],
 prs[], runs[], ci {label,state}, derived GitHub URLs. No credentials stored —

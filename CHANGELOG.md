@@ -11,6 +11,9 @@
 - Added `docs/PROJ-HOWTO.md` (+ summary) — task-oriented guides for install, bulk commit/push, `--dry-run`, `--config`, `--assist`, and nested-submodule handling.
 - Added `docs/PROJ-FAQ.md` (+ summary) — why/when/compared-to-what answers: `foreach` vs. this tool, subtrees vs. submodules, `--dry-run`/`--no-push`/`--assist` distinctions, partial-push-failure recovery, and the stateless/no-external-writes trust note.
 
+## 2026-10-26
+- Doc sweep: seeded `.meta/pointers.yaml` with 9 file anchors (PR #38); refreshed PROJ-LAYOUT/ARCH/SCHEMA (+ summaries) for `gh-wait` and `agh` (CI workflow, tests/fakes, coverage gate); added THREAT-MODEL (+ summary).
+
 ## [m1-subtree-import] — 2026-06-14 — tag: `utilities-shell-github-utils/m1-subtree-import`
 Initial landing of the `github-tools` submodule-workflow utility as a git subtree, followed immediately by ignore-file cleanup.
 
