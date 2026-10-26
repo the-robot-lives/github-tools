@@ -1,3 +1,4 @@
+<!-- 〚📁:60faf7a2-adaa-5a59-a1ff-db5d4ee84bfe〛 submodule-status reference :: Reference for the read-only submodule dashboard (fzf TUI, HTML, table, JSON). -->
 # submodule-status
 
 Read-only dashboard of git submodules, worktrees (with ages), open PRs, and

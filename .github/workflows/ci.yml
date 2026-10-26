@@ -1,3 +1,4 @@
+# 〚📁:7546cd48-e742-5358-bb47-d5ebc480239d〛 CI workflow :: GitHub Actions test + coverage gate and PR timing tracker for the github-tools suite.
 name: CI
 
 on:

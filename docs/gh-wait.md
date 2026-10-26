@@ -1,3 +1,4 @@
+<!-- 〚📁:89ee5a52-fbad-5943-8f63-2e0acbb9c987〛 gh-wait reference :: Full reference for the gh-wait poller: subcommands, exit codes, output format, and snapshot mode. -->
 # gh-wait
 
 Wait on GitHub PR, CI, and deploy status with one command prefix. It wraps

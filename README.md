@@ -1,3 +1,4 @@
+<!-- 〚📁:4e213f81-d93b-540c-ad8e-d1d1b1aa7ccf〛 github-tools README :: Entry point: purpose, prerequisites, install, and usage for the submodule-status / submodule-commit / gh-wait CLI suite. -->
 # github-tools
 
 **Repo:** https://github.com/the-robot-lives/github-tools
